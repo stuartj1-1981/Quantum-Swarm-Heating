@@ -1,0 +1,20 @@
+name: Quantum Swarm Heating Add-on
+version: "1.0.0"
+slug: quantum_swarm_heating
+description: Adaptive ML heating control with PyTorch in HA
+arch:
+  - amd64
+startup: application
+boot: auto
+options:
+  tado_rooms: []
+  independent_sensors: []
+  battery_entities: {}
+  global_entities: {}
+  # Add more categories as needed (e.g., tariff_entities: {}, hp_entities: {})
+schema:
+  tado_rooms: list(dict(room: str, entity: str))?
+  independent_sensors: list(dict(id: str, entity: str))?
+  battery_entities: object
+  global_entities: object
+image: "ghcr.io/your-github-username/quantum-swarm-heating-addon"  # Build/push your image
