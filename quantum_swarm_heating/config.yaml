@@ -9,13 +9,12 @@ arch:
 startup: application
 boot: auto
 options:
-  tado_rooms: []
-  independent_sensors: []
-  battery_entities: {}
-  global_entities: {}
-  # Add more categories as needed (e.g., tariff_entities: {}, hp_entities: {})
+  tado_rooms: "[]"
+  independent_sensors: "[]"
+  battery_entities: "{}"
+  global_entities: "{}"
 schema:
-  tado_rooms: list?
-  independent_sensors: list?
-  battery_entities: dict?
-  global_entities: dict?
+  tado_rooms: str?
+  independent_sensors: str?
+  battery_entities: str?
+  global_entities: str?
