@@ -13,8 +13,7 @@ options:
   global_entities: {}
   # Add more categories as needed (e.g., tariff_entities: {}, hp_entities: {})
 schema:
-  tado_rooms: list(dict(room: str, entity: str))?
-  independent_sensors: list(dict(id: str, entity: str))?
-  battery_entities: object
-  global_entities: object
-image: "ghcr.io/your-github-username/quantum-swarm-heating-addon"  # Build/push your image
+  tado_rooms: list?
+  independent_sensors: list?
+  battery_entities: dict?
+  global_entities: dict?
