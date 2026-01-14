@@ -15,8 +15,8 @@ options:
   battery_entities:  {}
   global_entities:  {}
 schema:
-  tado_rooms: list({room: str, entity: str?})?
-  independent_sensors: list({sensor: str?})?
-  battery_entities: dict(str: str)?
-  global_entities: dict(str: str)?
+  tado_rooms: list(dict)?
+  independent_sensors: list(dict)?
+  battery_entities: dict?
+  global_entities: dict?
 
