@@ -2,6 +2,8 @@ name: Quantum Swarm Heating Add-on
 version: "1.0.0"
 slug: quantum_swarm_heating
 description: Adaptive ML heating control with PyTorch in HA
+build_from:
+  amd64: ghcr.io/home-assistant/amd64-base:latest
 arch:
   - amd64
 startup: application
