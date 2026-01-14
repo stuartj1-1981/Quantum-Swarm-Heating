@@ -10,8 +10,15 @@ import json
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Note: This script assumes it's running in a Home Assistant add-on environment where 'hass' is available (injected by HA).
-# If not, you may need to adjust for your setup (e.g., as a custom component).
+# Check if 'hass' is available (HA injects it in add-ons/components)
+try:
+    hass
+except NameError:
+    logging.critical("'hass' not defined! Running in fallback mode with defaults only. Ensure script is in a HA add-on environment.")
+    class MockHass:
+        states = type('States', (), {'get': lambda self, eid: None})
+        services = type('Services', (), {'call': lambda self, *args, **kwargs: logging.warning("Mock service call—no action taken.")})
+    hass = MockHass()
 
 def fetch_ha_entity(entity_id, attr=None):
     state = hass.states.get(entity_id)
@@ -32,7 +39,7 @@ def set_ha_service(domain, service, data):
     else:
         hass.services.call(domain, service, data, blocking=True)
 
-# Default config
+# Default config (unchanged from prior DFAN iterations)
 HOUSE_CONFIG = {
     'rooms': { 'lounge': 19.48, 'open_plan_ground': 42.14, 'utility': 3.40, 'cloaks': 2.51,
         'bed1': 18.17, 'bed2': 13.59, 'bed3': 11.07, 'bed4': 9.79, 'bathroom': 6.02, 'ensuite1': 6.38, 'ensuite2': 3.71,
@@ -220,133 +227,4 @@ def sim_step(graph, states, config, model, optimizer):
         for zone, sensor_key in config['zone_sensor_map'].items():
             sensor_entity = config['entities'].get(sensor_key)
             if sensor_entity:
-                zone_temp = float(fetch_ha_entity(sensor_entity) or target_temp)
-                offset = target_temp - zone_temp
-                zone_offsets[zone] = offset
-                offset_loss += abs(offset)  # Penalty for deviations
-
-        # Tariffs (combine current/next day; similar for exports)
-        current_day_rates = fetch_ha_entity(config['entities']['current_day_rates'])
-        next_day_rates = fetch_ha_entity(config['entities']['next_day_rates'])
-        all_rates = parse_rates_array(current_day_rates) + parse_rates_array(next_day_rates)
-        current_rate = get_current_rate(all_rates)
-        # Next cheap slot: Find min rate in next 24h
-        next_cheap = min(price for _, _, price in all_rates) / 100 if all_rates else config['fallback_rates']['cheap']
-
-        # Total demand (with offsets, chill; add solar gain) — Moved earlier
-        production = float(fetch_ha_entity(config['entities']['solar_production']) or 0)
-        base_loss = total_loss(config, ext_temp, target_temp, chill_factor)
-        total_demand = base_loss + offset_loss + water_load - calc_solar_gain(config, production)
-
-        # Battery (compute capacity, stored, available; enhanced logic)
-        soc = float(fetch_ha_entity(config['entities']['battery_soc']) or 50.0)
-        design_ah = float(fetch_ha_entity(config['entities']['battery_design_capacity_ah']) or 100.0)
-        remaining_ah = float(fetch_ha_entity(config['entities']['battery_remaining_capacity_ah']) or 50.0)
-        capacity_kwh = design_ah * config['battery']['voltage'] / 1000
-        energy_stored = remaining_ah * config['battery']['voltage'] / 1000
-        discharge_available = max(0, (soc - config['battery']['min_soc_reserve']) / 100 * capacity_kwh)
-        battery_power = float(fetch_ha_entity(config['entities']['battery_power']) or 0)  # Positive discharge
-        charge_rate = 0.0
-        discharge_rate = 0.0
-        excess_solar = max(0, production - (water_load))  # Excess after basic load; refine with house consumption
-        if current_rate < 0.15 and soc < 80 and excess_solar > 0:
-            charge_rate = min(config['battery']['max_rate'], excess_solar / config['battery']['efficiency'])
-            # Call HA service to set charge if GivEnergy supports (e.g., number.givtcp_charge_target)
-            logging.info(f"Charging battery at {charge_rate:.2f} kW during cheap slot.")
-        elif current_rate > 0.30 and discharge_available > 0:
-            discharge_rate = min(config['battery']['max_rate'], discharge_available)
-            logging.info(f"Discharging battery at {discharge_rate:.2f} kW during peak.")
-        # Adjust demand/net with battery
-        total_demand_adjusted = max(0, total_demand - discharge_rate) + (charge_rate / config['battery']['efficiency'])
-
-        # Inverter/grid (net gen, import/export; check voltage)
-        ac_charge = float(fetch_ha_entity(config['entities']['ac_charge_power']) or 0)
-        grid_power = float(fetch_ha_entity(config['entities']['grid_power']) or 0)  # Positive import
-        grid_voltage = float(fetch_ha_entity(config['entities']['grid_voltage_2']) or 230.0)
-        if not (config['grid']['min_voltage'] <= grid_voltage <= config['grid']['max_voltage']):
-            logging.warning(f"Grid voltage {grid_voltage}V out of bounds—pausing adjustments.")
-            return
-        inverter_efficiency = config['inverter']['fallback_efficiency']
-        net_gen = ac_charge * inverter_efficiency  # Placeholder; expand with solar/battery flows
-        net_import = max(0, grid_power)
-        net_export = max(0, -grid_power)
-
-        # CoP
-        live_cop = float(fetch_ha_entity(config['entities']['hp_cop']) or 3.5)
-
-        # Optimal flow/mode (with proactive boost)
-        flow_min = float(fetch_ha_entity(config['entities']['flow_min_temp']) or 32.0)
-        flow_max = float(fetch_ha_entity(config['entities']['flow_max_temp']) or 50.0)
-        optimal_flow = max(flow_min, min(flow_max, 35 + (total_demand / config['peak_loss'] * (flow_max - 35))))
-        optimal_mode = 'heat' if total_demand > 1.5 or ext_temp < 5 else 'off' if excess_solar > 1 or hot_water_active else 'auto'
-        if upcoming_cold and current_rate < 0.15:
-            optimal_flow += 5  # Pre-boost flow
-            optimal_mode = 'heat'
-            logging.info("Proactive heating enabled due to forecast cold snap.")
-
-        # Update states (expanded for RL: tariff, soc, cop, flow, demand, solar, wind, forecast_min)
-        states = torch.tensor([current_rate, soc, live_cop, optimal_flow, total_demand, excess_solar, wind_speed, forecast_min_temp], dtype=torch.float32)
-
-        # Log tank suggestion
-        if tank_temp < config['hot_water']['tank_low_threshold'] and current_rate < 0.15:
-            logging.info("Tank low—suggest activating hot water in current cheap slot.")
-
-        # Pause if hot water active
-        if hot_water_active or hp_water_night:
-            logging.info("Hot water cycle active—pausing space heating sets.")
-            return
-
-        # Apply settings if control on
-        if dfan_control:
-            # Set Tado for all rooms (use offsets for per-room temp if desired)
-            for room in config['rooms']:
-                entity_key = room + '_temp_set_hum'
-                if entity_key in config['entities']:
-                    entity = config['entities'][entity_key]
-                    data = {'entity_id': entity, 'temperature': target_temp + zone_offsets.get(room, 0)}
-                    set_ha_service('climate', 'set_temperature', data)
-
-            # Set flow (merge base_data)
-            flow_data = {'device_id': config['hp_flow_service']['device_id'],
-                         **config['hp_flow_service']['base_data'],
-                         'weather_comp_min_temperature': flow_min,
-                         'weather_comp_max_temperature': flow_max,
-                         'fixed_flow_temperature': optimal_flow}
-            set_ha_service(config['hp_flow_service']['domain'], config['hp_flow_service']['service'], flow_data)
-
-            # Set mode (use water_heater as entity for climate if appropriate; adjust if separate)
-            mode_data = {'entity_id': config['entities']['water_heater'], 'hvac_mode': optimal_mode}
-            set_ha_service('climate', 'set_hvac_mode', mode_data)
-        else:
-            logging.info(f"Shadow mode: DFAN would set flow {optimal_flow:.1f}°C and mode {optimal_mode}.")
-
-        # RL update (enhanced reward: -rate*demand/cop + export + cop_bonus - offsets + battery arbitrage)
-        action = model.actor(states.unsqueeze(0))  # e.g., [flow_delta, mode_index]
-        reward = -current_rate * total_demand / live_cop + (net_export * config['fallback_rates']['export']) - (abs(charge_rate) * (1 - config['battery']['efficiency']))
-        reward += (live_cop - 3.0) * 0.5 - (offset_loss * 0.1)  # CoP bonus, offset penalty
-        reward += (charge_rate * (next_cheap - current_rate)) if charge_rate > 0 else - (discharge_rate * current_rate)  # Arbitrage
-        value = model.critic(states.unsqueeze(0))
-        loss = (reward - value).pow(2).mean()
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        logging.info(f"RL update: Reward {reward:.2f}, Loss {loss.item():.4f}")
-    except Exception as e:
-        logging.error(f"Sim step error: {e}")
-
-# Main run
-graph = build_dfan_graph(HOUSE_CONFIG)
-state_dim = 8  # Expanded: tariff, soc, cop, flow, demand, solar, wind, forecast_min
-action_dim = 2  # e.g., flow adjust, mode select (expand to 3 for battery if needed)
-model = ActorCritic(state_dim, action_dim)
-optimizer = optim.Adam(model.parameters(), lr=0.001)
-states = torch.zeros(state_dim)  # Initial
-
-train_rl(graph, states, HOUSE_CONFIG, model, optimizer)  # Initial training
-
-def live_loop(graph, states, config, model, optimizer):
-    while True:
-        sim_step(graph, states, config, model, optimizer)
-        time.sleep(600)  # 10 min
-
-live_loop(graph, states, HOUSE_CONFIG, model, optimizer)
+                zone_temp = float(fetch_ha_entity(sensor_entity) or

@@ -6,14 +6,17 @@ arch:
   - amd64
 startup: application
 boot: auto
+hassio_api: true
+homeassistant_api: true
+apparmor: false
 options:
-  tado_rooms: "[]"
-  independent_sensors: "[]"
-  battery_entities: "{}"
-  global_entities: "{}"
+  tado_rooms: []
+  independent_sensors: []
+  battery_entities:  {}
+  global_entities:  {}
 schema:
-  tado_rooms: str?
-  independent_sensors: str?
-  battery_entities: str?
-  global_entities: str?
+  tado_rooms: list({room: str, entity: str?})?
+  independent_sensors: list({sensor: str?})?
+  battery_entities: dict(str: str)?
+  global_entities: dict(str: str)?
 
