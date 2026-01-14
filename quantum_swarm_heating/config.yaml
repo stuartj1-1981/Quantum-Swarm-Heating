@@ -12,8 +12,8 @@ apparmor: false
 options:
   tado_rooms: []
   independent_sensors: []
-  battery_entities: {}
-  global_entities: {}
+  battery_entities: "{}"
+  global_entities: "{}"
 schema:
   tado_rooms:
     - map:
@@ -23,6 +23,6 @@ schema:
     - map:
         name: str
         entity: str
-  battery_entities: dict?
-  global_entities: dict?
+  battery_entities: str?
+  global_entities: str?
 
