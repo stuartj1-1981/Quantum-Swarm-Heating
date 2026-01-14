@@ -7,13 +7,13 @@ arch:
 startup: application
 boot: auto
 options:
-  tado_rooms: []
-  independent_sensors: []
-  battery_entities: {}
-  global_entities: {}
+  tado_rooms: "[]"
+  independent_sensors: "[]"
+  battery_entities: "{}"
+  global_entities: "{}"
 schema:
-  tado_rooms: list(object(room: str, entity: str))?
-  independent_sensors: list(object(id: str, entity: str))?
-  battery_entities: object
-  global_entities: object
+  tado_rooms: str?
+  independent_sensors: str?
+  battery_entities: str?
+  global_entities: str?
 

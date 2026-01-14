@@ -119,13 +119,25 @@ HOUSE_CONFIG = {
     }
 }
 
-# Merge user options with defaults (e.g., user tado_rooms list overrides)
-if 'tado_rooms' in user_options and isinstance(user_options['tado_rooms'], list):
-    HOUSE_CONFIG['entities'].update({item['room'] + '_temp_set_hum': item['entity'] for item in user_options['tado_rooms'] if isinstance(item, dict) and 'room' in item and 'entity' in item})
-# ... similar merge for independent_sensors, battery_entities, etc.
+import json
 
-# ... full funcs: parse_rates_array, get_current_rate, calc_solar_gain, calc_room_loss, total_loss, build_dfan_graph, SimpleQNet, ActorCritic, train_rl as before
+# Load user options from HA add-on path
+try:
+    with open('/data/options.json', 'r') as f:
+        user_options = json.load(f)
+except Exception as e:
+    logging.warning(f"Failed to load options.json: {e}. Using defaults.")
+    user_options = {}
 
+# Merge user options with defaults (parse JSON strings)
+if 'tado_rooms' in user_options:
+    try:
+        tado_rooms_list = json.loads(user_options['tado_rooms'])
+        if isinstance(tado_rooms_list, list):
+            HOUSE_CONFIG['entities'].update({item['room'] + '_temp_set_hum': item['entity'] for item in tado_rooms_list if isinstance(item, dict) and 'room' in item and 'entity' in item})
+    except json.JSONDecodeError as e:
+        logging.warning(f"Invalid JSON for tado_rooms: {e}. Using defaults.")
+# ... similar try/json.loads for independent_sensors (list), battery_entities (dict), global_entities (dict)
 # Sim step (with all integrations, shadow if toggle off)
 def sim_step(graph, states, config, optimizer):
     dfan_control = fetch_ha_entity(config['entities']['dfan_control_toggle']) == 'on'
