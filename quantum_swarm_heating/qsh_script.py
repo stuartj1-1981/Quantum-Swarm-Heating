@@ -15,9 +15,15 @@ try:
     hass
 except NameError:
     logging.critical("'hass' not defined! Running in fallback mode with defaults only. Ensure script is in a HA add-on environment.")
+    class MockStates:
+        def get(self, eid):
+            return None
+    class MockServices:
+        def call(self, *args, **kwargs):
+            logging.warning("Mock service call—no action taken.")
     class MockHass:
-        states = type('States', (), {'get': lambda self, eid: None})
-        services = type('Services', (), {'call': lambda self, *args, **kwargs: logging.warning("Mock service call—no action taken.")})
+        states = MockStates()
+        services = MockServices()
     hass = MockHass()
 
 def fetch_ha_entity(entity_id, attr=None):
