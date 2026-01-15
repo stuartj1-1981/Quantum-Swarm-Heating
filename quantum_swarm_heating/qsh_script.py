@@ -151,7 +151,7 @@ def parse_rates_array(rates_list):
         return []
 
 def get_current_rate(rates):
-    now = datetime.utcnow()  # Use UTC-aware now for comparison with aware rates timestamps
+    now = datetime.now(timezone.utc)  # UTC-aware now for comparison
     for start, end, price in rates:
         try:
             start_dt = datetime.fromisoformat(start)
