@@ -11,6 +11,8 @@ import json
 import requests
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.info(f"Loaded user_options: {user_options}")
+logging.info(f"Detected HA_TOKEN: {HA_TOKEN if HA_TOKEN else 'None'}")
 
 # HA API setup
 HA_URL = os.getenv('HA_URL', 'http://supervisor/core/api')
