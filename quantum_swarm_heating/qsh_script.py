@@ -12,7 +12,7 @@ import requests
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Load user options
+# Load user options (for overrides like tado_rooms; no token needed)
 try:
     with open('/data/options.json', 'r') as f:
         user_options = json.load(f)
@@ -22,16 +22,16 @@ except Exception as e:
 
 logging.info(f"Loaded user_options: {user_options}")  # Debug
 
-# HA API setup (pull token from options or env)
-HA_URL = os.getenv('HA_URL', 'http://supervisor/core/api')
-HA_TOKEN = user_options.get('ha_token') or os.getenv('HA_TOKEN')
+# HA API setup (use SUPERVISOR_TOKEN for internal add-on access)
+HA_URL = 'http://supervisor/core/api'
+HA_TOKEN = os.getenv('SUPERVISOR_TOKEN')
 
-logging.info(f"Detected HA_TOKEN: {'Set' if HA_TOKEN and HA_TOKEN.strip() else 'None'}")  # Check if non-empty
+logging.info(f"Detected SUPERVISOR_TOKEN: {'Set' if HA_TOKEN else 'None'}")
 
-if not HA_TOKEN or not HA_TOKEN.strip():
-    logging.critical("HA_TOKEN not set or empty! Using defaults only. Check add-on config.")
+if not HA_TOKEN:
+    logging.critical("SUPERVISOR_TOKEN not set! Using defaults only. Ensure hassio_api: true in config.yaml.")
 else:
-    logging.info("HA_TOKEN found—using real HA API calls.")
+    logging.info("SUPERVISOR_TOKEN found—using real HA API calls.")
 
 def fetch_ha_entity(entity_id, attr=None):
     if not HA_TOKEN:

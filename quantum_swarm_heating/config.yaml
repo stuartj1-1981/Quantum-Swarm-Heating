@@ -9,16 +9,15 @@ boot: auto
 hassio_api: true
 homeassistant_api: true
 apparmor: false
+map: - config:rw
 options:
   tado_rooms: "[]"
   independent_sensors: "[]"
   battery_entities: "{}"
   global_entities: "{}"
-  ha_token: ""
 schema:
   tado_rooms: str?
   independent_sensors: str?
   battery_entities: str?
   global_entities: str?
-  ha_token: str?
 
