@@ -12,7 +12,7 @@ import requests
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Load user options (for overrides like tado_rooms; no token needed)
+# Load user options
 try:
     with open('/data/options.json', 'r') as f:
         user_options = json.load(f)
@@ -141,15 +141,11 @@ if 'tado_rooms' in user_options and isinstance(user_options['tado_rooms'], list)
 # Add similar for others as needed
 
 def parse_rates_array(rates_str):
-    if rates_str is None:
-        logging.warning("Rates data is None—using fallback rates.")
+    if rates_str is None or not isinstance(rates_str, str) or rates_str.strip() in ('', 'unavailable'):
+        logging.warning("Invalid rates data—using fallback rates.")
         return []
     try:
-        # If already dict/list, use as-is
-        if isinstance(rates_str, (dict, list)):
-            rates = rates_str
-        else:
-            rates = json.loads(rates_str)
+        rates = json.loads(rates_str)
         return [(r['start'], r['end'], r['value_inc_vat']) for r in rates.get('rates', [])]
     except Exception as e:
         logging.error(f"Rate parse error: {e} — using fallback rates.")
