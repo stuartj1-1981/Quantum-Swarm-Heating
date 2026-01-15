@@ -141,11 +141,11 @@ if 'tado_rooms' in user_options and isinstance(user_options['tado_rooms'], list)
 # Add similar for others as needed
 
 def parse_rates_array(rates_list):
-    if not rates_list or not isinstance(rates_list, list):
-        logging.warning("Invalid rates data—using fallback rates.")
+    if not rates_list or not isinstance(rates_list, list) or len(rates_list) == 0:
+        logging.warning("Rates list empty or invalid—using fallback rates.")
         return []
     try:
-        return [(r['valid_from'], r['valid_to'], r['value_inc_vat']) for r in rates_list if all(k in r for k in ('valid_from', 'valid_to', 'value_inc_vat'))]
+        return [(r['valid_from'], r['valid_to'], r['value_inc_vat']) for r in rates_list if 'valid_from' in r and 'valid_to' in r and 'value_inc_vat' in r]
     except Exception as e:
         logging.error(f"Rate parse error: {e} — using fallback rates.")
         return []
@@ -238,9 +238,11 @@ def sim_step(graph, states, config, model, optimizer):
                 offset_loss += abs(offset)
 
         # Updated rates fetching (pull 'rates' attribute as list)
-        current_day_rates = fetch_ha_entity(config['entities']['current_day_rates'], 'rates') or []
-        next_day_rates = fetch_ha_entity(config['entities']['next_day_rates'], 'rates') or []
-        all_rates = parse_rates_array(current_day_rates) + parse_rates_array(next_day_rates)
+        current_day_rates_list = fetch_ha_entity(config['entities']['current_day_rates'], 'rates') or []
+        next_day_rates_list = fetch_ha_entity(config['entities']['next_day_rates'], 'rates') or []
+        logging.info(f"Raw current_day_rates: {current_day_rates_list}")  # Debug raw data
+        logging.info(f"Raw next_day_rates: {next_day_rates_list}")  # Debug raw data
+        all_rates = parse_rates_array(current_day_rates_list) + parse_rates_array(next_day_rates_list)
         current_rate = get_current_rate(all_rates)
         next_cheap = min(price for _, _, price in all_rates) / 100 if all_rates else config['fallback_rates']['cheap']
 
