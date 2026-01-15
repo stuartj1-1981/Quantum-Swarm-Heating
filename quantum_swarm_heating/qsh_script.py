@@ -26,10 +26,10 @@ logging.info(f"Loaded user_options: {user_options}")  # Debug
 HA_URL = os.getenv('HA_URL', 'http://supervisor/core/api')
 HA_TOKEN = user_options.get('ha_token') or os.getenv('HA_TOKEN')
 
-logging.info(f"Detected HA_TOKEN: {'Set' if HA_TOKEN else 'None'}")  # Debug (hides actual token)
+logging.info(f"Detected HA_TOKEN: {'Set' if HA_TOKEN and HA_TOKEN.strip() else 'None'}")  # Check if non-empty
 
-if not HA_TOKEN:
-    logging.critical("HA_TOKEN not set! Using defaults only. Check add-on config or env.")
+if not HA_TOKEN or not HA_TOKEN.strip():
+    logging.critical("HA_TOKEN not set or empty! Using defaults only. Check add-on config.")
 else:
     logging.info("HA_TOKEN found—using real HA API calls.")
 
