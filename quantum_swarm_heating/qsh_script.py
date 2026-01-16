@@ -12,7 +12,7 @@ import requests
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Load user options
+# Load user options (optional for now, as hardcoded; can re-enable for deployability)
 try:
     with open('/data/options.json', 'r') as f:
         user_options = json.load(f)
@@ -69,7 +69,7 @@ def set_ha_service(domain, service, data):
         except Exception as e:
             logging.error(f"HA set error for {entity_id or data.get('device_id')}: {e}")
 
-# Default config
+# Hardcoded HOUSE_CONFIG for your specific setup (full Tado entities added; peak_loss=5.0 from -3°C calc)
 HOUSE_CONFIG = {
     'rooms': { 'lounge': 19.48, 'open_plan_ground': 42.14, 'utility': 3.40, 'cloaks': 2.51,
         'bed1': 18.17, 'bed2': 13.59, 'bed3': 11.07, 'bed4': 9.79, 'bathroom': 6.02, 'ensuite1': 6.38, 'ensuite2': 3.71,
@@ -79,7 +79,18 @@ HOUSE_CONFIG = {
         'hall': 0.2, 'landing': 0.2 },
     'entities': {
         'lounge_temp_set_hum': 'climate.tado_smart_radiator_thermostat_va4240580352',
-        'open_plan_ground_temp_set_hum': ['climate.tado_smart_radiator_thermostat_va0349246464', 'climate.tado_smart_radiator_thermostat_va3553629184'],
+        'open_plan_ground_temp_set_hum': ['climate.tado_smart_radiator_thermostat_va0349246464', 'climate.tado_smart_radiator_thermostat_va3553629184'],  # Dining and family room; add kitchen if separate
+        'utility_temp_set_hum': 'climate.tado_smart_radiator_thermostat_va1604136448',
+        'cloaks_temp_set_hum': 'climate.tado_smart_radiator_thermostat_va0949825024',
+        'bed1_temp_set_hum': 'climate.tado_smart_radiator_thermostat_va1287620864',
+        'bed2_temp_set_hum': 'climate.tado_smart_radiator_thermostat_va1941512960',
+        'bed3_temp_set_hum': 'climate.tado_smart_radiator_thermostat_va4141228288',
+        'bed4_temp_set_hum': 'climate.tado_smart_radiator_thermostat_va2043158784',
+        'bathroom_temp_set_hum': 'climate.tado_smart_radiator_thermostat_va2920296192',
+        'ensuite1_temp_set_hum': 'climate.tado_smart_radiator_thermostat_va0001191680',
+        'ensuite2_temp_set_hum': 'climate.tado_smart_radiator_thermostat_va1209347840',
+        'hall_temp_set_hum': 'climate.tado_smart_radiator_thermostat_va0567183616',
+        'landing_temp_set_hum': 'climate.tado_smart_radiator_thermostat_va0951787776',
         'independent_sensor01': 'sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_sensor01_temperature',
         'independent_sensor02': 'sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_sensor02_temperature',
         'independent_sensor03': 'sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_sensor03_temperature',
@@ -119,7 +130,7 @@ HOUSE_CONFIG = {
     'grid': {'nominal_voltage': 230.0, 'min_voltage': 200.0, 'max_voltage': 250.0},
     'fallback_rates': {'cheap': 0.1495, 'standard': 0.3048, 'peak': 0.4572, 'export': 0.15},
     'inverter': {'fallback_efficiency': 0.95},
-    'peak_loss': 10.0,
+    'peak_loss': 5.0,  # Updated to 5.0 kW @ -3°C based on your heat loss calc
     'hp_flow_service': {
         'domain': 'octopus_energy',
         'service': 'set_heat_pump_flow_temp_config',
@@ -135,10 +146,7 @@ HOUSE_CONFIG = {
     }
 }
 
-# Merge user options
-if 'tado_rooms' in user_options and isinstance(user_options['tado_rooms'], list):
-    HOUSE_CONFIG['entities'].update({item['room'] + '_temp_set_hum': item['entity'] for item in user_options['tado_rooms'] if isinstance(item, dict) and 'room' in item and 'entity' in item})
-# Add similar for others as needed
+# Merge user options (optional for now, as hardcoded; can re-enable for deployability)
 
 def parse_rates_array(rates_list):
     if not rates_list or not isinstance(rates_list, list) or len(rates_list) == 0:
@@ -213,7 +221,8 @@ def sim_step(graph, states, config, model, optimizer):
         ext_temp = float(fetch_ha_entity(config['entities']['outdoor_temp']) or 0.0)
         wind_speed = float(fetch_ha_entity(config['entities']['forecast_weather'], 'wind_speed') or 0.0)
         chill_factor = 1.0
-        target_temp = 21.0
+        target_temp = float(fetch_ha_entity(config['entities']['pid_target_temperature']) or 21.0)  # Fetch from entity
+        logging.info(f"Using target_temp: {target_temp}°C from pid_target_temperature.")
         delta = target_temp - ext_temp
         if wind_speed > 5:
             effective_temp = 13.12 + 0.6215 * ext_temp - 11.37 * wind_speed**0.16 + 0.3965 * ext_temp * wind_speed**0.16
