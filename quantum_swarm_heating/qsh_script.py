@@ -296,22 +296,11 @@ def sim_step(graph, states, config, model, optimizer):
         grid_voltage = float(fetch_ha_entity(config['entities']['grid_voltage_2']) or 230.0)
         if not (config['grid']['min_voltage'] <= grid_voltage <= config['grid']['max_voltage']):
             logging.warning(f"Grid voltage {grid_voltage}V out of bounds—pausing adjustments.")
-            # Define defaults for RL vars before return
-            current_rate = config['fallback_rates']['standard']
-            live_cop = 3.5
-            offset_loss = 0.0
-            net_export = 0.0
-            charge_rate = 0.0
-            discharge_rate = 0.0
-            next_cheap = config['fallback_rates']['cheap']
-            reward = 0.0
-            loss = torch.tensor(0.0)
-            # Proceed to RL update
-        else:
-            inverter_efficiency = config['inverter']['fallback_efficiency']
-            net_gen = ac_charge * inverter_efficiency
-            net_import = max(0, grid_power)
-            net_export = max(0, -grid_power)
+            return
+        inverter_efficiency = config['inverter']['fallback_efficiency']
+        net_gen = ac_charge * inverter_efficiency
+        net_import = max(0, grid_power)
+        net_export = max(0, -grid_power)
 
         live_cop = float(fetch_ha_entity(config['entities']['hp_cop']) or 3.5)
 
@@ -331,82 +320,7 @@ def sim_step(graph, states, config, model, optimizer):
 
         if hot_water_active or hp_water_night:
             logging.info("Hot water cycle active—pausing space heating sets.")
-            # Define defaults for RL vars before return
-            reward = -current_rate * total_demand / live_cop + (net_export * config['fallback_rates']['export']) - (abs(charge_rate) * (1 - config['battery']['efficiency']))
-            reward += (live_cop - 3.0) * 0.5 - (offset_loss * 0.1)
-            reward += (charge_rate * (next_cheap - current_rate)) if charge_rate > 0 else - (discharge_rate * current_rate)
-            value = model.critic(states.unsqueeze(0))
-            loss = (reward - value).pow(2).mean()
-            # Proceed to RL update
-
-        # ───────────────────────────────────────────────────────────────
-        # ALWAYS update shadow/preview entities (even in shadow mode)
-        # ───────────────────────────────────────────────────────────────
-        set_ha_service('input_number', 'set_value', {
-            'entity_id': 'input_number.qsh_shadow_flow',
-            'value': optimal_flow
-        })
-
-        set_ha_service('select', 'select_option', {
-            'entity_id': 'select.qsh_shadow_mode',
-            'option': optimal_mode
-        })
-
-        set_ha_service('input_number', 'set_value', {
-            'entity_id': 'input_number.qsh_shadow_total_demand',
-            'value': total_demand
-        })
-
-        set_ha_service('input_number', 'set_value', {
-            'entity_id': 'input_number.qsh_shadow_charge_rate',
-            'value': charge_rate
-        })
-
-        set_ha_service('input_number', 'set_value', {
-            'entity_id': 'input_number.qsh_shadow_discharge_rate',
-            'value': discharge_rate
-        })
-
-        set_ha_service('input_number', 'set_value', {
-            'entity_id': 'input_number.qsh_shadow_rl_reward',
-            'value': reward
-        })
-
-        set_ha_service('input_number', 'set_value', {
-            'entity_id': 'input_number.qsh_shadow_rl_loss',
-            'value': loss.item()
-        })
-
-        # Update shadow room setpoints (per-room suggestions)
-        for room in config['rooms']:
-            entity_key = room + '_temp_set_hum'
-            if entity_key in config['entities']:
-                suggested_temp = target_temp + zone_offsets.get(room, 0)
-                logging.info(f"Suggested setpoint for {room}: {suggested_temp:.1f}°C (shadow)")
-
-                # Map to shadow entity (adjust names if needed)
-                shadow_map = {
-                    'lounge': 'input_number.qsh_shadow_lounge_setpoint',
-                    'open_plan_ground': 'input_number.qsh_shadow_open_plan_setpoint',
-                    'utility': 'input_number.qsh_shadow_utility_setpoint',
-                    'cloaks': 'input_number.qsh_shadow_cloaks_setpoint',
-                    'bed1': 'input_number.qsh_shadow_bed1_setpoint',
-                    'bed2': 'input_number.qsh_shadow_bed2_setpoint',
-                    'bed3': 'input_number.qsh_shadow_bed3_setpoint',
-                    'bed4': 'input_number.qsh_shadow_bed4_setpoint',
-                    'bathroom': 'input_number.qsh_shadow_bathroom_setpoint',
-                    'ensuite1': 'input_number.qsh_shadow_ensuite1_setpoint',
-                    'ensuite2': 'input_number.qsh_shadow_ensuite2_setpoint',
-                    'hall': 'input_number.qsh_shadow_hall_setpoint',
-                    'landing': 'input_number.qsh_shadow_landing_setpoint'
-                }
-                shadow_entity = shadow_map.get(room)
-                if shadow_entity:
-                    set_ha_service('input_number', 'set_value', {
-                        'entity_id': shadow_entity,
-                        'value': suggested_temp
-                    })
-        # ───────────────────────────────────────────────────────────────
+            return
 
         if dfan_control:
             for room in config['rooms']:
@@ -428,7 +342,7 @@ def sim_step(graph, states, config, model, optimizer):
         else:
             logging.info(f"Shadow mode: DFAN would set flow {optimal_flow:.1f}°C and mode {optimal_mode}.")
 
-        # RL update (moved before early returns, with defaults if needed)
+        action = model.actor(states.unsqueeze(0))
         reward = -current_rate * total_demand / live_cop + (net_export * config['fallback_rates']['export']) - (abs(charge_rate) * (1 - config['battery']['efficiency']))
         reward += (live_cop - 3.0) * 0.5 - (offset_loss * 0.1)
         reward += (charge_rate * (next_cheap - current_rate)) if charge_rate > 0 else - (discharge_rate * current_rate)
