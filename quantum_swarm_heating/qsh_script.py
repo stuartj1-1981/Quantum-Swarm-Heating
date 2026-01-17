@@ -366,9 +366,11 @@ def sim_step(graph, states, config, model, optimizer):
         set_ha_service('input_number', 'set_value', {'entity_id': 'input_number.qsh_charge_rate', 'value': charge_rate})
         set_ha_service('input_number', 'set_value', {'entity_id': 'input_number.qsh_discharge_rate', 'value': discharge_rate})
 
-        # RL metrics
-        set_ha_service('input_number', 'set_value', {'entity_id': 'input_number.qsh_rl_reward', 'value': reward})
-        set_ha_service('input_number', 'set_value', {'entity_id': 'input_number.qsh_rl_loss', 'value': loss.item()})
+        # RL metrics (with clamping to match entity min/max)
+        clamped_reward = max(min(reward, 100.0), -100.0)
+        set_ha_service('input_number', 'set_value', {'entity_id': 'input_number.qsh_rl_reward', 'value': clamped_reward})
+        clamped_loss = max(min(loss.item(), 2000.0), 0.0)
+        set_ha_service('input_number', 'set_value', {'entity_id': 'input_number.qsh_rl_loss', 'value': clamped_loss})
 
         # Per-room shadow setpoints
         for room in config['rooms']:
