@@ -352,6 +352,34 @@ def sim_step(graph, states, config, model, optimizer):
         loss.backward()
         optimizer.step()
         logging.info(f"RL update: Reward {reward:.2f}, Loss {loss.item():.4f}")
+        
+# Update shadow/preview entities (always, for dashboard consistency)
+# Total demand
+set_ha_service('input_number', 'set_value', {'entity_id': 'input_number.qsh_total_demand', 'value': total_demand_adjusted})
+
+# Flow and mode
+set_ha_service('input_number', 'set_value', {'entity_id': 'input_number.qsh_shadow_flow', 'value': optimal_flow})
+set_ha_service('select', 'select_option', {'entity_id': 'select.qsh_shadow_mode', 'option': optimal_mode})
+
+# Battery rates
+set_ha_service('input_number', 'set_value', {'entity_id': 'input_number.qsh_charge_rate', 'value': charge_rate})
+set_ha_service('input_number', 'set_value', {'entity_id': 'input_number.qsh_discharge_rate', 'value': discharge_rate})
+
+# RL metrics
+set_ha_service('input_number', 'set_value', {'entity_id': 'input_number.qsh_rl_reward', 'value': reward})
+set_ha_service('input_number', 'set_value', {'entity_id': 'input_number.qsh_rl_loss', 'value': loss.item()})
+
+# Per-room shadow setpoints
+for room in config['rooms']:
+    shadow_setpoint = target_temp + zone_offsets.get(room, 0)
+    entity_id = f'input_number.qsh_shadow_{room}_setpoint'
+    set_ha_service('input_number', 'set_value', {'entity_id': entity_id, 'value': shadow_setpoint})
+    if not dfan_control:
+        logging.info(f"Shadow: Would set {room} to {shadow_setpoint:.1f}°C")  # Optional extra log for debug
+
+# Tank suggestion (as boolean, from your earlier idea—integrate here if not already)
+tank_suggest = tank_temp < config['hot_water']['tank_low_threshold'] and current_rate < 0.15
+set_ha_service('input_boolean', 'turn_on' if tank_suggest else 'turn_off', {'entity_id': 'input_boolean.qsh_tank_suggestion'})
     except Exception as e:
         logging.error(f"Sim step error: {e}")
 
