@@ -355,8 +355,9 @@ def sim_step(graph, states, config, model, optimizer):
         logging.info(f"RL update: Reward {reward:.2f}, Loss {loss.item():.4f}")
 
         # Update shadow/preview entities (always, for dashboard consistency)
-        # Total demand
-        set_ha_service('input_number', 'set_value', {'entity_id': 'input_number.qsh_total_demand', 'value': total_demand_adjusted})
+        # Total demand (with clamping to match entity min/max: 0-10)
+        clamped_demand = max(min(total_demand_adjusted, 10.0), 0.0)
+        set_ha_service('input_number', 'set_value', {'entity_id': 'input_number.qsh_total_demand', 'value': clamped_demand})
 
         # Flow and mode
         set_ha_service('input_number', 'set_value', {'entity_id': 'input_number.qsh_shadow_flow', 'value': optimal_flow})
