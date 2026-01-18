@@ -324,11 +324,17 @@ def sim_step(graph, states, config, model, optimizer):
         flow_min = float(fetch_ha_entity(config['entities']['flow_min_temp']) or 32.0)
         flow_max = float(fetch_ha_entity(config['entities']['flow_max_temp']) or 50.0)
         optimal_flow = max(flow_min, min(flow_max, 35 + (total_demand / config['peak_loss'] * (flow_max - 35))))
-        optimal_mode = 'heat' if total_demand > 1.5 or ext_temp < 5 else 'off' if excess_solar > 1 or hot_water_active else 'auto'
-        if upcoming_cold and current_rate < 0.15:
-            optimal_flow += 5
-            optimal_mode = 'heat'
-            logging.info("Proactive heating enabled due to forecast cold snap.")
+        
+        # MODIFIED: Binary mode choice only ('Heat' or 'Off') to avoid HP internal schedule
+        if total_demand > 1.5 or ext_temp < 5 or (upcoming_cold and current_rate < 0.15):
+            optimal_mode = 'Heat'  # Prioritize heat for demand/cold/cheap proactive scenarios
+            if upcoming_cold and current_rate < 0.15:
+                optimal_flow += 5
+                logging.info("Proactive heating enabled due to forecast cold snap.")
+        else:
+            optimal_mode = 'Off'  # Default to off (e.g., excess solar, hot water active, or low demand)
+            if excess_solar > 1 or hot_water_active:
+                logging.info("Would have used 'auto' in old logic—defaulting to 'Off' for QSH control.")
 
         states = torch.tensor([current_rate, soc, live_cop, optimal_flow, total_demand, excess_solar, wind_speed, forecast_min_temp], dtype=torch.float32)
 
