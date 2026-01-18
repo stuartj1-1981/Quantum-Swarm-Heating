@@ -320,6 +320,12 @@ def sim_step(graph, states, config, model, optimizer):
         flow_max = float(fetch_ha_entity(config['entities']['flow_max_temp']) or 50.0)
         optimal_flow = max(flow_min, min(flow_max, 35 + (total_demand / config['peak_loss'] * (flow_max - 35))))
         
+        # Fix Octopus GraphQL serializer validation (KT-CT-4321) – too many float digits
+        optimal_flow = round(optimal_flow, 1)
+        flow_min = round(flow_min, 1)
+        flow_max = round(flow_max, 1)
+        logging.info(f"Rounded optimal_flow: {optimal_flow:.1f}°C, flow_min: {flow_min:.1f}°C, flow_max: {flow_max:.1f}°C")
+        
         # MODIFIED: Binary mode choice only ('heat' or 'off') to avoid HP internal schedule
         if total_demand > 1.5 or ext_temp < 5 or (upcoming_cold and current_rate < 0.15):
             optimal_mode = 'heat'  # Prioritize heat for demand/cold/cheap proactive scenarios
