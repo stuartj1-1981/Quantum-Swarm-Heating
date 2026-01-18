@@ -331,6 +331,11 @@ def sim_step(graph, states, config, model, optimizer):
             if excess_solar > 1:
                 logging.info("Would have used 'auto' in old logic—defaulting to 'Off' for QSH control.")
 
+        # Debug logging for mode decision
+        logging.info(f"Mode decision: optimal_mode='{optimal_mode}', total_demand={total_demand:.2f} kW, "
+                     f"ext_temp={ext_temp:.1f}°C, upcoming_cold={upcoming_cold}, current_rate={current_rate:.3f} GBP/kWh, "
+                     f"hot_water_active={hot_water_active}")
+
         states = torch.tensor([current_rate, soc, live_cop, optimal_flow, total_demand, excess_solar, wind_speed, forecast_min_temp], dtype=torch.float32)
 
         if dfan_control:
@@ -370,7 +375,8 @@ def sim_step(graph, states, config, model, optimizer):
 
         # Flow and mode
         set_ha_service('input_number', 'set_value', {'entity_id': 'input_number.qsh_shadow_flow', 'value': optimal_flow})
-        set_ha_service('select', 'select_option', {'entity_id': 'select.qsh_shadow_mode', 'option': optimal_mode})
+        set_ha_service('input_select', 'select_option', {'entity_id': 'input_select.qsh_shadow_mode', 'option': optimal_mode})
+        set_ha_service('input_select', 'select_option', {'entity_id': 'input_select.qsh_optimal_mode', 'option': optimal_mode})
 
         # RL metrics (with clamping to match entity min/max)
         clamped_reward = max(min(reward, 100.0), -100.0)
