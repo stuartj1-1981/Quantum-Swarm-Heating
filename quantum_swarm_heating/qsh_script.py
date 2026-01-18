@@ -320,16 +320,16 @@ def sim_step(graph, states, config, model, optimizer):
         flow_max = float(fetch_ha_entity(config['entities']['flow_max_temp']) or 50.0)
         optimal_flow = max(flow_min, min(flow_max, 35 + (total_demand / config['peak_loss'] * (flow_max - 35))))
         
-        # MODIFIED: Binary mode choice only ('Heat' or 'Off') to avoid HP internal schedule
+        # MODIFIED: Binary mode choice only ('heat' or 'off') to avoid HP internal schedule
         if total_demand > 1.5 or ext_temp < 5 or (upcoming_cold and current_rate < 0.15):
-            optimal_mode = 'Heat'  # Prioritize heat for demand/cold/cheap proactive scenarios
+            optimal_mode = 'heat'  # Prioritize heat for demand/cold/cheap proactive scenarios
             if upcoming_cold and current_rate < 0.15:
                 optimal_flow += 5
                 logging.info("Proactive heating enabled due to forecast cold snap.")
         else:
-            optimal_mode = 'Off'  # Default to off (e.g., excess solar or low demand)
+            optimal_mode = 'off'  # Default to off (e.g., excess solar or low demand)
             if excess_solar > 1:
-                logging.info("Would have used 'auto' in old logic—defaulting to 'Off' for QSH control.")
+                logging.info("Would have used 'auto' in old logic—defaulting to 'off' for QSH control.")
 
         # Debug logging for mode decision
         logging.info(f"Mode decision: optimal_mode='{optimal_mode}', total_demand={total_demand:.2f} kW, "
