@@ -9,6 +9,7 @@ import logging
 import os
 import json
 import requests
+from collections import defaultdict  # Added for zone grouping
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -72,6 +73,8 @@ def set_ha_service(domain, service, data):
 # Hardcoded HOUSE_CONFIG for your specific setup (full Tado entities added; peak_loss=5.0 from -3°C calc)
 # Updated: Renamed 'open_plan_ground' to 'open_plan' for entity name consistency (avoids _ground in shadow setpoints)
 # Added design_target and peak_ext for calibrated loss_coeff
+# Added thermal_mass_per_m2 and heat_up_tau_h for thermal mass modeling
+# Reverted: peak_loss to 5.0 kW @ -3°C based on real world data from previous conversations
 HOUSE_CONFIG = {
     'rooms': { 'lounge': 19.48, 'open_plan': 42.14, 'utility': 3.40, 'cloaks': 2.51,
         'bed1': 18.17, 'bed2': 13.59, 'bed3': 11.07, 'bed4': 9.79, 'bathroom': 6.02, 'ensuite1': 6.38, 'ensuite2': 3.71,
@@ -133,9 +136,11 @@ HOUSE_CONFIG = {
     'grid': {'nominal_voltage': 230.0, 'min_voltage': 200.0, 'max_voltage': 250.0},
     'fallback_rates': {'cheap': 0.1495, 'standard': 0.3048, 'peak': 0.4572, 'export': 0.15},
     'inverter': {'fallback_efficiency': 0.95},
-    'peak_loss': 5.0,  # Updated to 5.0 kW @ -3°C based on your heat loss calc
+    'peak_loss': 5.0,  # Reverted to 5.0 kW @ -3°C based on real world data from previous conversations
     'design_target': 21.0,  # Design internal temp for peak_loss calc
     'peak_ext': -3.0,       # Design external temp for peak_loss
+    'thermal_mass_per_m2': 0.03,  # kWh/(m² °C), typical value based on residential buildings
+    'heat_up_tau_h': 1.0,  # Desired heat-up time in hours for temperature deficits
     'hp_flow_service': {
         'domain': 'octopus_energy',
         'service': 'set_heat_pump_flow_temp_config',
@@ -255,19 +260,36 @@ def sim_step(graph, states, config, model, optimizer):
         current_hour = datetime.now().hour
         hp_water_night = 1 if hp_chosen and ext_temp > config['hot_water']['ext_threshold'] and config['hot_water']['cycle_start_hour'] <= current_hour < config['hot_water']['cycle_end_hour'] else 0
 
-        zone_offsets = {}
-        offset_loss = 0.0
-        for zone, sensor_key in config['zone_sensor_map'].items():
+        # Build zone groups
+        sensor_to_rooms = defaultdict(list)
+        for room, sensor_key in config['zone_sensor_map'].items():
+            sensor_to_rooms[sensor_key].append(room)
+
+        # Fetch zone temps and compute offsets
+        zone_temps = {}
+        zone_offsets = {}  # For setpoints, per room
+        for sensor_key, rooms_list in sensor_to_rooms.items():
             sensor_entity = config['entities'].get(sensor_key)
             if sensor_entity:
                 zone_temp = float(fetch_ha_entity(sensor_entity) or target_temp)
-                offset = target_temp - zone_temp
-                zone_offsets[zone] = offset
-                if sum_af > 0:
-                    area = config['rooms'].get(zone, 0)
-                    facing = config['facings'].get(zone, 1.0)
-                    zone_coeff = (area * facing / sum_af) * loss_coeff
-                    offset_loss += zone_coeff * offset  # No abs; negatives reduce demand
+                zone_temps[sensor_key] = zone_temp
+                for room in rooms_list:
+                    zone_offsets[room] = target_temp - zone_temp  # Same offset for all rooms in zone
+
+        # Compute actual_loss and heat_up_power
+        actual_loss = 0.0
+        heat_up_power = 0.0
+        for sensor_key, rooms_list in sensor_to_rooms.items():
+            zone_temp = zone_temps[sensor_key]
+            zone_af = sum(config['rooms'][r] * config['facings'][r] for r in rooms_list)
+            zone_coeff = (zone_af / sum_af) * loss_coeff if sum_af > 0 else 0.0
+            zone_loss = zone_coeff * max(0, zone_temp - ext_temp) * chill_factor
+            actual_loss += zone_loss
+            zone_area = sum(config['rooms'][r] for r in rooms_list)
+            zone_C = zone_area * config['thermal_mass_per_m2']
+            offset = target_temp - zone_temp
+            if offset > 0:
+                heat_up_power += (zone_C * offset) / config['heat_up_tau_h']
 
         # Rates fetching (with time check for next_day)
         current_day_rates_list = fetch_ha_entity(config['entities']['current_day_rates'], 'rates') or []
@@ -287,8 +309,8 @@ def sim_step(graph, states, config, model, optimizer):
         next_cheap = min(price for _, _, price in all_rates) / 100 if all_rates else config['fallback_rates']['cheap']
 
         production = float(fetch_ha_entity(config['entities']['solar_production']) or 0)
-        base_loss = total_loss(config, ext_temp, target_temp, chill_factor, loss_coeff, sum_af)
-        total_demand = base_loss + offset_loss + water_load - calc_solar_gain(config, production)
+        solar_gain = calc_solar_gain(config, production)
+        total_demand = actual_loss + heat_up_power + water_load - solar_gain
 
         soc = float(fetch_ha_entity(config['entities']['battery_soc']) or 50.0)
         design_ah = float(fetch_ha_entity(config['entities']['battery_design_capacity_ah']) or 100.0)
@@ -367,7 +389,7 @@ def sim_step(graph, states, config, model, optimizer):
 
         action = model.actor(states.unsqueeze(0))
         reward = -current_rate * total_demand / live_cop + (net_export * config['fallback_rates']['export']) - (abs(charge_rate) * (1 - config['battery']['efficiency']))
-        reward += (live_cop - 3.0) * 0.5 - (abs(offset_loss) * 0.1)  # Updated to abs(offset_loss) for reward if needed, but since offset_loss can be negative, adjust as per intent
+        reward += (live_cop - 3.0) * 0.5 - (abs(heat_up_power) * 0.1)  # Updated to use heat_up_power
         reward += (charge_rate * (next_cheap - current_rate)) if charge_rate > 0 else - (discharge_rate * current_rate)
         value = model.critic(states.unsqueeze(0))
         loss = (reward - value).pow(2).mean()
