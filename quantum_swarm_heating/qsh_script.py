@@ -325,9 +325,9 @@ def sim_step(graph, states, config, model, optimizer):
         discharge_rate = 0.0
         excess_solar = max(0, production)
         
-        # Fetch grid power (positive: import, negative: export)
+        # Fetch grid power (positive: export, negative: import)
         grid_power = float(fetch_ha_entity(config['entities']['grid_power']) or 0.0)
-        logging.info(f"Fetched grid_power: {grid_power:.2f} kW")
+        logging.info(f"Fetched grid_power: {grid_power:.2f} W")
 
         # Adjust total_demand_adjusted (post-solar/battery, incorporating grid)
         total_demand_adjusted = max(0, total_demand - excess_solar + max(0, -discharge_rate)) + max(0, grid_power)  # Clamp to avoid negatives
@@ -392,9 +392,9 @@ def sim_step(graph, states, config, model, optimizer):
         reward += (live_cop - 3.0) * 0.5 - (abs(heat_up_power) * 0.1)  # Updated to use heat_up_power
         
         # RL reward tweak for grid power (penalize imports during peaks, bonus for exports)
-        if current_rate > 0.3 and grid_power > 0.5:
+        if current_rate > 0.3 and grid_power > - 0.5:
             reward -= grid_power * current_rate * 0.2  # Cost hit for unoffset imports
-        elif grid_power < -1.0:
+        elif grid_power < 1.0:
             reward += abs(grid_power) * config['fallback_rates']['export'] * 0.1  # Export bonus
         
         value = model.critic(states.unsqueeze(0))
