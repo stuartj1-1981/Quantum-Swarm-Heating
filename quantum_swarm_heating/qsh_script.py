@@ -38,9 +38,9 @@ def fetch_ha_entity(entity_id, attr=None):
     if not HA_TOKEN:
         return None
     headers = {
-    "Authorization": f"Bearer {HA_TOKEN}",
-    "Content-Type": "application/json"
-}
+        "Authorization": f"Bearer {HA_TOKEN}",
+        "Content-Type": "application/json"
+    }
     try:
         r = requests.get(f"{HA_URL}/states/{entity_id}", headers=headers)
         r.raise_for_status()
@@ -436,29 +436,51 @@ def sim_step(graph, states, config, model, optimizer):
         optimizer.step()
         logging.info(f"RL update: Reward {reward:.2f}, Loss {loss.item():.4f}")
 
-        # Shadow/preview entities (always, for dashboard consistency)
-        # Total demand (with clamping to match entity min/max: 0-10)
-        clamped_demand = max(min(total_demand_adjusted, 10.0), 0.0)
-        set_ha_service('input_number', 'set_value', {'entity_id': 'input_number.qsh_total_demand', 'value': clamped_demand})
+        # Shadow/preview entities (always, for dashboard consistency) with try-except for robustness
+        try:
+            clamped_demand = max(min(total_demand_adjusted, 10.0), 0.0)
+            set_ha_service('input_number', 'set_value', {'entity_id': 'input_number.qsh_total_demand', 'value': clamped_demand})
+        except Exception as e:
+            logging.warning(f"Shadow set failed for qsh_total_demand: {e}")
 
-        # Flow and mode
-        set_ha_service('input_number', 'set_value', {'entity_id': 'input_number.qsh_shadow_flow', 'value': optimal_flow})
-        set_ha_service('input_select', 'select_option', {'entity_id': 'input_select.qsh_shadow_mode', 'option': optimal_mode})
-        set_ha_service('input_select', 'select_option', {'entity_id': 'input_select.qsh_optimal_mode', 'option': optimal_mode})
+        try:
+            set_ha_service('input_number', 'set_value', {'entity_id': 'input_number.qsh_shadow_flow', 'value': optimal_flow})
+        except Exception as e:
+            logging.warning(f"Shadow set failed for qsh_shadow_flow: {e}")
+
+        try:
+            set_ha_service('input_select', 'select_option', {'entity_id': 'input_select.qsh_shadow_mode', 'option': optimal_mode})
+        except Exception as e:
+            logging.warning(f"Shadow set failed for qsh_shadow_mode: {e}")
+
+        try:
+            set_ha_service('input_select', 'select_option', {'entity_id': 'input_select.qsh_optimal_mode', 'option': optimal_mode})
+        except Exception as e:
+            logging.warning(f"Shadow set failed for qsh_optimal_mode: {e}")
 
         # RL metrics (with clamping to match entity min/max)
-        clamped_reward = max(min(reward, 100.0), -100.0)
-        set_ha_service('input_number', 'set_value', {'entity_id': 'input_number.qsh_rl_reward', 'value': clamped_reward})
-        clamped_loss = max(min(loss.item(), 2000.0), 0.0)
-        set_ha_service('input_number', 'set_value', {'entity_id': 'input_number.qsh_rl_loss', 'value': clamped_loss})
+        try:
+            clamped_reward = max(min(reward, 100.0), -100.0)
+            set_ha_service('input_number', 'set_value', {'entity_id': 'input_number.qsh_rl_reward', 'value': clamped_reward})
+        except Exception as e:
+            logging.warning(f"Shadow set failed for qsh_rl_reward: {e}")
+
+        try:
+            clamped_loss = max(min(loss.item(), 2000.0), 0.0)
+            set_ha_service('input_number', 'set_value', {'entity_id': 'input_number.qsh_rl_loss', 'value': clamped_loss})
+        except Exception as e:
+            logging.warning(f"Shadow set failed for qsh_rl_loss: {e}")
 
         # Per-room shadow setpoints (with static override for persistent)
         for room in config['rooms']:
-            shadow_setpoint = 25.0 if room in config['persistent_zones'] else target_temp + zone_offsets.get(room, 0)
-            entity_id = f'input_number.qsh_shadow_{room}_setpoint'
-            set_ha_service('input_number', 'set_value', {'entity_id': entity_id, 'value': shadow_setpoint})
-            if not dfan_control:
-                logging.info(f"Shadow: Would set {room} to {shadow_setpoint:.1f}°C")  # Optional extra log for debug
+            try:
+                shadow_setpoint = 25.0 if room in config['persistent_zones'] else target_temp + zone_offsets.get(room, 0)
+                entity_id = f'input_number.qsh_shadow_{room}_setpoint'
+                set_ha_service('input_number', 'set_value', {'entity_id': entity_id, 'value': shadow_setpoint})
+                if not dfan_control:
+                    logging.info(f"Shadow: Would set {room} to {shadow_setpoint:.1f}°C")  # Optional extra log for debug
+            except Exception as e:
+                logging.warning(f"Shadow set failed for qsh_shadow_{room}_setpoint: {e}")
 
     except Exception as e:
         logging.error(f"Sim step error: {e}")
