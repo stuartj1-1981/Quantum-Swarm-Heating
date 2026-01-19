@@ -244,9 +244,23 @@ def sim_step(graph, states, config, model, optimizer):
         forecast = fetch_ha_entity(config['entities']['forecast_weather'], 'forecast') or []
         forecast_temps = [f['temperature'] for f in forecast if 'temperature' in f and (datetime.fromisoformat(f['datetime']) - datetime.now()) < timedelta(hours=24)]
         forecast_min_temp = min(forecast_temps) if forecast_temps else ext_temp
-        upcoming_cold = any(f['temperature'] < 5 for f in forecast if 'temperature' in f and (datetime.fromisoformat(f['datetime']) - datetime.now()) < timedelta(hours=12))
+        upcoming_cold = any(f['temperature'] < 5 
+                            for f in forecast 
+                            if 'temperature' in f 
+                            and (datetime.fromisoformat(f['datetime']) - datetime.now()) < timedelta(hours=12))
 
-        operation_mode = fetch_ha_entity(config['entities']['water_heater'], 'operation_mode') or 'heat_pump'
+        # Fetch raw mode
+        operation_mode = fetch_ha_entity(
+            config['entities']['water_heater'],
+            'operation_mode'
+)
+
+        # Normalise against known valid modes
+        valid_modes = {'electric', 'off', 'heat_pump', 'high_demand'}
+        if operation_mode not in valid_modes:
+        operation_mode = 'off'
+
+        # Detect high-demand mode
         hot_water_active = operation_mode == 'high_demand'
 
         if hot_water_active:
