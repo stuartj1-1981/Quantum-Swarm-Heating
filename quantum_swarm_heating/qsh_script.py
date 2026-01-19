@@ -258,7 +258,7 @@ def sim_step(graph, states, config, model, optimizer):
         # Normalise against known valid modes
         valid_modes = {'electric', 'off', 'heat_pump', 'high_demand'}
         if operation_mode not in valid_modes:
-        operation_mode = 'off'
+            operation_mode = 'off'
 
         # Detect high-demand mode
         hot_water_active = operation_mode == 'high_demand'
