@@ -37,7 +37,10 @@ else:
 def fetch_ha_entity(entity_id, attr=None):
     if not HA_TOKEN:
         return None
-    headers = {'Authorization': f"Bearer {HA_TOKEN}"}
+    headers = {
+    "Authorization": f"Bearer {SUPERVISOR_TOKEN}",
+    "Content-Type": "application/json"
+}
     try:
         r = requests.get(f"{HA_URL}/states/{entity_id}", headers=headers)
         r.raise_for_status()
