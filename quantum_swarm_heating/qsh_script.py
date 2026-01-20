@@ -333,23 +333,39 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         next_cheap = min(price for _, _, price in all_rates)  if all_rates else config['fallback_rates']['cheap']
 
         production = float(fetch_ha_entity(config['entities']['solar_production']) or 0)
-        solar_gain = calc_solar_gain(config, production)
+        global prod_history
+        prod_history.append(production)
+        smoothed_prod = sum(prod_history) / len(prod_history)
+        solar_gain = calc_solar_gain(config, smoothed_prod)
+        excess_solar = max(0, smoothed_prod)
         total_demand = actual_loss + heat_up_power - solar_gain
 
         soc = float(fetch_ha_entity(config['entities']['battery_soc']) or 50.0)
         charge_rate = 0.0
         discharge_rate = 0.0
-        excess_solar = max(0, production)
         
         # Fetch grid power (positive: export, negative: import)
         grid_power = float(fetch_ha_entity(config['entities']['grid_power']) or 0.0)
-        logging.info(f"Fetched grid_power: {grid_power:.2f} W")
+        global grid_history
+        grid_history.append(grid_power)
+        smoothed_grid = sum(grid_history) / len(grid_history)
+        logging.info(f"Fetched grid_power: {grid_power:.2f} W, Smoothed: {smoothed_grid:.2f} W")
+        logging.info(f"Fetched solar_production: {production:.2f} kW, Smoothed: {smoothed_prod:.2f} kW")
 
         # New: Demand smoothing
         global demand_history
         demand_history.append(total_demand)
         smoothed_demand = sum(demand_history) / len(demand_history)
-        total_demand_adjusted = max(0, smoothed_demand - excess_solar + max(0, -discharge_rate)) + max(0, grid_power)
+
+        # Revised: total_demand_adjusted
+        import_kw = max(0, -smoothed_grid / 1000.0)  # If negative grid (import), positive kW
+        export_kw = max(0, smoothed_grid / 1000.0)  # If positive, export kW
+        total_demand_adjusted = max(0, smoothed_demand - excess_solar - export_kw + import_kw)
+
+        # Guard against large swings
+        if abs(total_demand_adjusted - prev_demand) > 2.0:
+            logging.warning(f"Input anomaly detected: Demand swing {total_demand_adjusted:.2f} from {prev_demand:.2f} kW—using fallback.")
+            total_demand_adjusted = (total_demand_adjusted + prev_demand) / 2.0  # Average or prev
 
         # Updated: DFAN ΔT safeguard <1.0°C with persistence
         global low_delta_persist
@@ -456,17 +472,17 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
                      f"hot_water_active={hot_water_active}")
 
         # Expand states to include grid_power, delta_t, hp_power (state_dim now 11)
-        states = torch.tensor([current_rate, soc, live_cop, optimal_flow, smoothed_demand, excess_solar, wind_speed, forecast_min_temp, grid_power, delta_t, hp_power], dtype=torch.float32)
+        states = torch.tensor([current_rate, soc, live_cop, optimal_flow, smoothed_demand, excess_solar, wind_speed, forecast_min_temp, smoothed_grid, delta_t, hp_power], dtype=torch.float32)
 
         action = model.actor(states.unsqueeze(0))
         reward = -current_rate * total_demand_adjusted / live_cop
         reward += (live_cop - 3.0) * 0.5 - (abs(heat_up_power) * 0.1)
         
         # RL reward tweak for grid power (penalize imports during peaks, bonus for exports)
-        if current_rate > 0.3 and grid_power > - 0.5:
-            reward -= grid_power * current_rate * 0.2  # Cost hit for unoffset imports
-        elif grid_power < 1.0:
-            reward += abs(grid_power) * config['fallback_rates']['export'] * 0.1  # Export bonus
+        if current_rate > 0.3 and smoothed_grid < -500:  # Import >0.5 kW
+            reward -= abs(smoothed_grid / 1000.0) * current_rate * 0.2  # Cost hit for unoffset imports
+        elif smoothed_grid > 1000:  # Export >1 kW
+            reward += (smoothed_grid / 1000.0) * config['fallback_rates']['export'] * 0.1  # Export bonus
         
         # New: ΔT penalty in reward
         reward -= max(0, 3.0 - delta_t) * 2.0  # Penalty if <3°C
@@ -474,6 +490,10 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         # New: Penalize rapid flow changes
         if abs(optimal_flow - prev_flow) > 2.0:
             reward -= 0.3
+
+        # Amped: Penalize rapid demand changes
+        if abs(total_demand_adjusted - prev_demand) > 1.0:
+            reward -= 0.5
 
         value = model.critic(states.unsqueeze(0))
         loss = (reward - value).pow(2).mean()
@@ -560,7 +580,7 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
             except Exception as e:
                 logging.warning(f"Shadow set failed for qsh_shadow_{room}_setpoint: {e}")
 
-        return action_counter + 1, optimal_flow, optimal_mode, smoothed_demand
+        return action_counter + 1, optimal_flow, optimal_mode, total_demand_adjusted
 
     except Exception as e:
         logging.error(f"Sim step error: {e}")
@@ -587,6 +607,8 @@ action_counter = 0
 prev_flow = 35.0
 prev_mode = 'off'
 prev_demand = 0.0
+prod_history = deque(maxlen=3)
+grid_history = deque(maxlen=3)
 
 def live_loop(graph, states, config, model, optimizer):
     global action_counter, prev_flow, prev_mode, prev_demand
