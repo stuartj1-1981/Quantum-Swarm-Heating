@@ -9,7 +9,7 @@ import logging
 import os
 import json
 import requests
-from collections import defaultdict  # Added for zone grouping
+from collections import defaultdict, deque  # Added deque for smoothing
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -219,7 +219,7 @@ def train_rl(graph, states, config, model, optimizer, episodes=500):
         optimizer.step()
     logging.info("Initial RL training complete.")
 
-def sim_step(graph, states, config, model, optimizer):
+def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow, prev_mode, prev_demand):
     try:
         dfan_control = fetch_ha_entity(config['entities']['dfan_control_toggle']) == 'on'
         ext_temp = float(fetch_ha_entity(config['entities']['outdoor_temp']) or 0.0)
@@ -257,7 +257,7 @@ def sim_step(graph, states, config, model, optimizer):
         operation_mode = fetch_ha_entity(
             config['entities']['water_heater'],
             'operation_mode'
-)
+        )
 
         # Normalise against known valid modes
         valid_modes = {'electric', 'off', 'heat_pump', 'high_demand'}
@@ -270,7 +270,7 @@ def sim_step(graph, states, config, model, optimizer):
 
         if hot_water_active:
             logging.info("Hot water cycle active—pausing space heating sets.")
-            return
+            return action_counter + 1, prev_flow, prev_mode, prev_demand
 
         # Build zone groups
         sensor_to_rooms = defaultdict(list)
@@ -334,8 +334,11 @@ def sim_step(graph, states, config, model, optimizer):
         grid_power = float(fetch_ha_entity(config['entities']['grid_power']) or 0.0)
         logging.info(f"Fetched grid_power: {grid_power:.2f} W")
 
-        # Adjust total_demand_adjusted (post-solar/battery, incorporating grid)
-        total_demand_adjusted = max(0, total_demand - excess_solar + max(0, -discharge_rate)) + max(0, grid_power)  # Clamp to avoid negatives
+        # New: Demand smoothing
+        global demand_history
+        demand_history.append(total_demand)
+        smoothed_demand = sum(demand_history) / len(demand_history)
+        total_demand_adjusted = max(0, smoothed_demand - excess_solar + max(0, -discharge_rate)) + max(0, grid_power)
 
         cop_value = fetch_ha_entity(config['entities']['hp_cop'])
         live_cop = float(cop_value) if cop_value and cop_value != 'unavailable' else 3.5
@@ -343,26 +346,31 @@ def sim_step(graph, states, config, model, optimizer):
             live_cop = 3.5
             logging.warning("Live COP was <=0; using fallback 3.5")
 
-        # New: DFAN ΔT & min modulation safeguards
+        # Updated: DFAN ΔT safeguard <1.0°C with persistence
+        global low_delta_persist
         delta_t = float(fetch_ha_entity(config['entities']['primary_diff']) or 3.0)
         hp_power = float(fetch_ha_entity(config['entities']['hp_energy_rate']) or 0.0)  # kW
-        if delta_t < 2.0:
-            logging.info(f"DFAN ΔT safeguard: Current ΔT {delta_t:.1f}°C < 2.0°C—preparing flow boost.")
+        if delta_t < 1.0:
+            low_delta_persist += 1
+            if low_delta_persist >= 2:
+                logging.info(f"DFAN ΔT safeguard: Persistent ΔT {delta_t:.1f}°C <1.0°C—preparing flow boost.")
+        else:
+            low_delta_persist = 0
 
         flow_min = float(fetch_ha_entity(config['entities']['flow_min_temp']) or 32.0)
         flow_max = float(fetch_ha_entity(config['entities']['flow_max_temp']) or 50.0)
-        optimal_flow = max(flow_min, min(flow_max, 35 + (total_demand / config['peak_loss'] * (flow_max - 35))))
+        optimal_flow = max(flow_min, min(flow_max, 35 + (smoothed_demand / config['peak_loss'] * (flow_max - 35))))
         
-        # New: DFAN WC cap (low limit 30°C as requested)
+        # DFAN WC cap (low limit 30°C as requested)
         wc_cap = min(45, max(30, 50 - (ext_temp * 1.2)))  # Tune multiplier
         optimal_flow = min(optimal_flow, wc_cap)
         logging.info(f"DFAN WC applied: Capped flow to {optimal_flow:.1f}°C for ext_temp {ext_temp:.1f}°C")
         
-        # Apply ΔT boost if needed (after capping)
-        if delta_t < 2.0:
-            optimal_flow += 2.0  # DFAN boost for low ΔT
-            optimal_flow = min(optimal_flow, flow_max)  # Re-clamp
-            logging.info(f"DFAN ΔT safeguard: Boosted flow by 2°C (current ΔT: {delta_t:.1f}°C)")
+        # Apply ΔT boost if persistent (after capping)
+        if low_delta_persist >= 2:
+            optimal_flow += 2.0
+            optimal_flow = min(optimal_flow, flow_max)
+            logging.info(f"DFAN ΔT safeguard: Boosted flow by 2°C (persistent ΔT: {delta_t:.1f}°C)")
 
         # Fix Octopus GraphQL serializer validation (KT-CT-4321) – too many float digits
         optimal_flow = round(optimal_flow, 1)
@@ -372,7 +380,7 @@ def sim_step(graph, states, config, model, optimizer):
         
         # MODIFIED: Binary mode choice only ('heat' or 'off') to avoid HP internal schedule
         optimal_mode = 'heat'  # Default assume heat
-        if total_demand > 1.5 or ext_temp < 5 or (upcoming_cold and current_rate < 0.15):
+        if smoothed_demand > 1.5 or ext_temp < 5 or (upcoming_cold and current_rate < 0.15):
             optimal_mode = 'heat'  # Prioritize heat for demand/cold/cheap proactive scenarios
             if upcoming_cold and current_rate < 0.15:
                 optimal_flow += 5
@@ -382,21 +390,49 @@ def sim_step(graph, states, config, model, optimizer):
             if excess_solar > 1:
                 logging.info("Would have used 'auto' in old logic—defaulting to 'off' for QSH control.")
 
-        # New: Min mod check (after mode decision)
-        if hp_power < 0.35 and total_demand > 0:
+        # Updated: Min mod check <0.20kW (after mode decision)
+        if hp_power < 0.20 and smoothed_demand > 0:
             optimal_mode = 'off'  # Standby to avoid sub-min mod
             target_temp -= 0.5  # Temporary drop
-            logging.info(f"DFAN min mod safeguard: Switched to 'off' (HP power: {hp_power:.2f}kW < 0.35kW)")
+            logging.info(f"DFAN min mod safeguard: Switched to 'off' (HP power: {hp_power:.2f}kW <0.20kW)")
 
         # Debug logging for mode decision
-        logging.info(f"Mode decision: optimal_mode='{optimal_mode}', total_demand={total_demand:.2f} kW, "
+        logging.info(f"Mode decision: optimal_mode='{optimal_mode}', total_demand={smoothed_demand:.2f} kW, "
                      f"ext_temp={ext_temp:.1f}°C, upcoming_cold={upcoming_cold}, current_rate={current_rate:.3f} GBP/kWh, "
                      f"hot_water_active={hot_water_active}")
 
         # Expand states to include grid_power, delta_t, hp_power (state_dim now 11)
-        states = torch.tensor([current_rate, soc, live_cop, optimal_flow, total_demand, excess_solar, wind_speed, forecast_min_temp, grid_power, delta_t, hp_power], dtype=torch.float32)
+        states = torch.tensor([current_rate, soc, live_cop, optimal_flow, smoothed_demand, excess_solar, wind_speed, forecast_min_temp, grid_power, delta_t, hp_power], dtype=torch.float32)
 
-        if dfan_control:
+        action = model.actor(states.unsqueeze(0))
+        reward = -current_rate * total_demand_adjusted / live_cop
+        reward += (live_cop - 3.0) * 0.5 - (abs(heat_up_power) * 0.1)
+        
+        # RL reward tweak for grid power (penalize imports during peaks, bonus for exports)
+        if current_rate > 0.3 and grid_power > - 0.5:
+            reward -= grid_power * current_rate * 0.2  # Cost hit for unoffset imports
+        elif grid_power < 1.0:
+            reward += abs(grid_power) * config['fallback_rates']['export'] * 0.1  # Export bonus
+        
+        # New: ΔT penalty in reward
+        reward -= max(0, 3.0 - delta_t) * 2.0  # Penalty if <3°C
+
+        # New: Penalize rapid flow changes
+        if abs(optimal_flow - prev_flow) > 2.0:
+            reward -= 0.3
+
+        value = model.critic(states.unsqueeze(0))
+        loss = (reward - value).pow(2).mean()
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        logging.info(f"RL update: Reward {reward:.2f}, Loss {loss.item():.4f}")
+
+        # Conditional actions: Every 10 loops or urgent
+        flow_delta = abs(optimal_flow - prev_flow)
+        demand_delta = abs(smoothed_demand - prev_demand)
+        urgent = (optimal_mode != prev_mode) or (flow_delta > 2.0) or (demand_delta > 0.5) or (low_delta_persist >= 2) or (hp_power < 0.20)
+        if dfan_control and (action_counter % 10 == 0 or urgent):
             for room in config['rooms']:
                 entity_key = room + '_temp_set_hum'
                 if entity_key in config['entities']:
@@ -413,28 +449,16 @@ def sim_step(graph, states, config, model, optimizer):
 
             mode_data = {'device_id': config['hp_hvac_service']['device_id'], 'hvac_mode': optimal_mode}
             set_ha_service(config['hp_hvac_service']['domain'], config['hp_hvac_service']['service'], mode_data)
+            
+            # Updated: Set static 23°C only when mode='heat' (HP auto-handles 'off' to 7°C)
+            if optimal_mode == 'heat':
+                temp_data = {'device_id': config['hp_hvac_service']['device_id'], 'temperature': 23.0}
+                set_ha_service('climate', 'set_temperature', temp_data)
+                logging.info("DFAN setpoint adjust: Set HP temperature to static 23°C in 'heat' mode to override internal control.")
+
+            logging.info(f"DFAN action triggered: { 'urgent' if urgent else 'scheduled' } - setting flow {optimal_flow:.1f}°C, mode {optimal_mode}.")
         else:
-            logging.info(f"Shadow mode: DFAN would set flow {optimal_flow:.1f}°C and mode {optimal_mode}.")
-
-        action = model.actor(states.unsqueeze(0))
-        reward = -current_rate * total_demand_adjusted / live_cop  # Fixed: Use _adjusted
-        reward += (live_cop - 3.0) * 0.5 - (abs(heat_up_power) * 0.1)  # Updated to use heat_up_power
-        
-        # RL reward tweak for grid power (penalize imports during peaks, bonus for exports)
-        if current_rate > 0.3 and grid_power > - 0.5:
-            reward -= grid_power * current_rate * 0.2  # Cost hit for unoffset imports
-        elif grid_power < 1.0:
-            reward += abs(grid_power) * config['fallback_rates']['export'] * 0.1  # Export bonus
-        
-        # New: ΔT penalty in reward
-        reward -= max(0, 3.0 - delta_t) * 2.0  # Penalty if <3°C
-
-        value = model.critic(states.unsqueeze(0))
-        loss = (reward - value).pow(2).mean()
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        logging.info(f"RL update: Reward {reward:.2f}, Loss {loss.item():.4f}")
+            logging.info(f"Data gather: Shadow would set flow {optimal_flow:.1f}°C and mode {optimal_mode}. (Action in {10 - (action_counter % 10)} loops)")
 
         # Shadow/preview entities (always, for dashboard consistency) with try-except for robustness
         try:
@@ -482,8 +506,11 @@ def sim_step(graph, states, config, model, optimizer):
             except Exception as e:
                 logging.warning(f"Shadow set failed for qsh_shadow_{room}_setpoint: {e}")
 
+        return action_counter + 1, optimal_flow, optimal_mode, smoothed_demand
+
     except Exception as e:
         logging.error(f"Sim step error: {e}")
+        return action_counter + 1, prev_flow, prev_mode, prev_demand
 
 graph = build_dfan_graph(HOUSE_CONFIG)
 state_dim = 11  # Updated to 11 for delta_t and hp_power addition
@@ -494,9 +521,18 @@ states = torch.zeros(state_dim)
 
 train_rl(graph, states, HOUSE_CONFIG, model, optimizer)
 
+# Initialize globals for refinements
+demand_history = deque(maxlen=3)
+low_delta_persist = 0
+action_counter = 0
+prev_flow = 35.0
+prev_mode = 'off'
+prev_demand = 0.0
+
 def live_loop(graph, states, config, model, optimizer):
+    global action_counter, prev_flow, prev_mode, prev_demand
     while True:
-        sim_step(graph, states, config, model, optimizer)
-        time.sleep(600)
+        action_counter, prev_flow, prev_mode, prev_demand = sim_step(graph, states, config, model, optimizer, action_counter, prev_flow, prev_mode, prev_demand)
+        time.sleep(120)  # 2min gather cycles
 
 live_loop(graph, states, HOUSE_CONFIG, model, optimizer)
