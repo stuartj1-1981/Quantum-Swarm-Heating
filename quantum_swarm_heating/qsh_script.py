@@ -231,6 +231,7 @@ def train_rl(graph, states, config, model, optimizer, episodes=500):
     logging.info("Initial RL training complete.")
 
 def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow, prev_mode, prev_demand):
+    global low_delta_persist, low_power_start_time, prev_hp_power, prev_flow_temp, prev_cop, cycle_type, demand_history, prod_history, grid_history
     try:
         dfan_control = fetch_ha_entity(config['entities']['dfan_control_toggle']) == 'on'
         ext_temp = float(fetch_ha_entity(config['entities']['outdoor_temp']) or 0.0)
@@ -323,7 +324,6 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         next_cheap = min(price for _, _, price in all_rates)  if all_rates else config['fallback_rates']['cheap']
 
         production = float(fetch_ha_entity(config['entities']['solar_production']) or 0)
-        global prod_history
         prod_history.append(production)
         smoothed_prod = sum(prod_history) / len(prod_history)
         solar_gain = calc_solar_gain(config, smoothed_prod)
@@ -336,14 +336,12 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         
         # Fetch grid power (positive: export, negative: import)
         grid_power = float(fetch_ha_entity(config['entities']['grid_power']) or 0.0)
-        global grid_history
         grid_history.append(grid_power)
         smoothed_grid = sum(grid_history) / len(grid_history)
         logging.info(f"Fetched grid_power: {grid_power:.2f} W, Smoothed: {smoothed_grid:.2f} W")
         logging.info(f"Fetched solar_production: {production:.2f} kW, Smoothed: {smoothed_prod:.2f} kW")
 
         # New: Demand smoothing
-        global demand_history
         demand_history.append(total_demand)
         smoothed_demand = sum(demand_history) / len(demand_history)
 
@@ -358,7 +356,6 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
             total_demand_adjusted = (total_demand_adjusted + prev_demand) / 2.0  # Average or prev
 
         # Updated: DFAN ΔT safeguard <1.0°C with persistence
-        global low_delta_persist
         delta_t = float(fetch_ha_entity(config['entities']['primary_diff']) or 3.0)
         hp_power = float(fetch_ha_entity(config['entities']['hp_energy_rate']) or 0.0)  # kW
         if delta_t < 1.0:
@@ -407,7 +404,6 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         live_cop = float(cop_value) if cop_value and cop_value != 'unavailable' else prev_cop
 
         # Min Modulation with Cycle Detection (Oil Recovery/Defrost) - replaces old min mod check
-        global low_power_start_time, prev_hp_power, prev_flow_temp, prev_cop, cycle_type
         current_time = time.time()
         power_delta = hp_power - prev_hp_power
         flow_delta = current_flow_temp - prev_flow_temp
