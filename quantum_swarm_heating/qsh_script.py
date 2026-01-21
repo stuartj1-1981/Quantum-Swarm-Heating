@@ -1,3 +1,4 @@
+from logging import config
 import networkx as nx
 import torch
 import torch.nn as nn
@@ -184,9 +185,10 @@ EXTENDED_RECOVERY_TIME = 300  # For extended pauses
 # Global for persisted rates
 prev_all_rates = []
 
-def parse_rates_array(rates_list):
+def parse_rates_array(rates_list, suppress_warning=False):
     if not rates_list or not isinstance(rates_list, list) or len(rates_list) == 0:
-        logging.warning("Rates list empty or invalid—using fallback rates.")
+        if not suppress_warning:
+            logging.warning("Rates list empty or invalid—using fallback rates.")
         return []
     try:
         return [(r['start'], r['end'], r['value_inc_vat']) for r in rates_list if 'start' in r and 'end' in r and 'value_inc_vat' in r]
@@ -340,9 +342,10 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
 
         # Fetch rates
         current_day_rates = parse_rates_array(fetch_ha_entity(config['entities']['current_day_rates'], 'rates'))
-        next_day_rates = parse_rates_array(fetch_ha_entity(config['entities']['next_day_rates'], 'rates'))
+        suppress_next_warning = datetime.now(timezone.utc).hour < 16
+        next_day_rates = parse_rates_array(fetch_ha_entity(config['entities']['next_day_rates'], 'rates'), suppress_warning=suppress_next_warning)
         export_current_day = parse_rates_array(fetch_ha_entity(config['entities']['current_day_export_rates'], 'rates'))
-        export_next_day = parse_rates_array(fetch_ha_entity(config['entities']['next_day_export_rates'], 'rates'))
+        export_next_day = parse_rates_array(fetch_ha_entity(config['entities']['next_day_export_rates'], 'rates'), suppress_warning=suppress_next_warning)
         all_rates = current_day_rates + next_day_rates
         all_export_rates = export_current_day + export_next_day
         if all_rates != prev_all_rates:
