@@ -543,7 +543,7 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
             prev_loss = loss_history[-1]
             if prev_loss > 100:
                 reward_adjust -= 0.4
-        if len(loss_history) >= 5 and sum(loss_history[-5:]) / 5 < 1:
+        if len(loss_history) >= 5 and sum(list(loss_history)[-5:]) / 5 < 1:
             reward_adjust += 0.4
 
         # Base reward with scaling
