@@ -305,28 +305,18 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         for sensor_key, rooms_list in sensor_to_rooms.items():
             zone_temp = zone_temps[sensor_key]
             zone_af = sum(config['rooms'][r] * config['facings'][r] for r in rooms_list)
-            zone_coeff = (zone_af / sum_af) * loss_coeff if sum_af > 0 else 0.0
-            zone_loss = zone_coeff * max(0, zone_temp - ext_temp) * chill_factor
+            zone_loss = total_loss(config, ext_temp, target_temp, chill_factor, loss_coeff, zone_af)
             actual_loss += zone_loss
-            zone_area = sum(config['rooms'][r] for r in rooms_list)
-            zone_C = zone_area * config['thermal_mass_per_m2']
-            offset = target_temp - zone_temp
-            if offset > 0:
-                heat_up_power += (zone_C * offset) / config['heat_up_tau_h']
+            deficit = max(0, target_temp - zone_temp)
+            zone_mass = sum(config['rooms'][r] for r in rooms_list) * config['thermal_mass_per_m2']
+            heat_up = (deficit * zone_mass) / config['heat_up_tau_h']
+            heat_up_power += heat_up
 
-        # Rates fetching (with time check for next_day)
-        current_hour = datetime.now().hour
-        current_day_rates_list = fetch_ha_entity(config['entities']['current_day_rates'], 'rates') or []
-        logging.info(f"Raw current_day_rates: {current_day_rates_list}")  # Debug
+        # Rates with fallback
+        current_day_rates_list = fetch_ha_entity(config['entities']['current_day_rates']) or []
+        next_day_rates_list = fetch_ha_entity(config['entities']['next_day_rates']) or []
         current_day_parsed = parse_rates_array(current_day_rates_list)
-
-        if current_hour < 16:
-            logging.info("Skipping next-day rates fetch (expected after 16:00)—using fallback for next_cheap.")
-            next_day_parsed = []
-        else:
-            next_day_rates_list = fetch_ha_entity(config['entities']['next_day_rates'], 'rates') or []
-            logging.info(f"Raw next_day_rates: {next_day_rates_list}")  # Debug
-            next_day_parsed = parse_rates_array(next_day_rates_list)
+        next_day_parsed = parse_rates_array(next_day_rates_list)
 
         all_rates = current_day_parsed + next_day_parsed
         current_rate = get_current_rate(all_rates)
@@ -414,7 +404,7 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         # Fetch current flow temp and COP for cycle detection
         current_flow_temp = float(fetch_ha_entity(config['entities']['hp_flow_temp']) or 35.0)
         cop_value = fetch_ha_entity(config['entities']['hp_cop'])
-        live_cop = float(cop_value) if cop_value and cop_value != 'unavailable' else 3.5
+        live_cop = float(cop_value) if cop_value and cop_value != 'unavailable' else prev_cop
 
         # Min Modulation with Cycle Detection (Oil Recovery/Defrost) - replaces old min mod check
         global low_power_start_time, prev_hp_power, prev_flow_temp, prev_cop, cycle_type
@@ -431,20 +421,19 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
             time_in_low = current_time - low_power_start_time
             
             if time_in_low > LOW_POWER_MIN_IGNORE:
-                # Check for patterns after initial ignore window
                 if flow_delta <= FLOW_TEMP_DROP_THRESHOLD or cop_delta <= COP_DROP_THRESHOLD:
                     cycle_type = 'defrost'
-                    logging.info(f"Defrost cycle detected: Flow delta {flow_delta:.2f}°C / COP delta {cop_delta:.2f}. Allowing...")
+                    logging.info(f"Defrost cycle detected: Flow delta {flow_delta:.2f}°C / COP delta {cop_delta:.2f}. Pausing...")
                 elif power_delta >= POWER_SPIKE_THRESHOLD or flow_delta >= FLOW_TEMP_SPIKE_THRESHOLD or cop_delta >= COP_SPIKE_THRESHOLD:
                     cycle_type = 'oil_recovery'
-                    logging.info(f"Oil recovery cycle detected: Power delta {power_delta:.2f}kW / Flow delta {flow_delta:.2f}°C / COP delta {cop_delta:.2f}. Allowing...")
+                    logging.info(f"Oil recovery cycle detected: Power delta {power_delta:.2f}kW / Flow delta {flow_delta:.2f}°C / COP delta {cop_delta:.2f}. Pausing...")
                 
                 if cycle_type:
-                    # During confirmed cycle: Skip safeguards, use fallback COP
-                    live_cop = 3.5
-                    logging.info(f"Using fallback COP 3.5 during confirmed cycle ({cycle_type})")
+                    # NEW: Pause like hot water
+                    logging.info(f"Cycle pause: Type {cycle_type}, duration {time_in_low:.0f}s—pausing adjustments.")
+                    return action_counter + 1, prev_flow, prev_mode, prev_demand  # Skip updates/RL/sets
+                
                 elif time_in_low > LOW_POWER_MAX_TOLERANCE:
-                    # No cycle detected, persistent low: Boost demand
                     optimal_flow += 2.0  # Boost flow as demand boost
                     optimal_flow = min(optimal_flow, flow_max)
                     low_power_start_time = None
@@ -452,19 +441,19 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
                     logging.warning("Persistent low HP power without cycle patterns: Boosting demand")
         else:
             if low_power_start_time:
-                logging.info(f"HP power recovered: Ending monitor (cycle: {cycle_type or 'none'})")
+                logging.info(f"HP power recovered: Ending monitor (cycle: {cycle_type or 'none'}, duration {time_in_low:.0f}s)")
             low_power_start_time = None
             cycle_type = None
         
+        # NEW: COP check outside cycles—use prev if <=0
+        if live_cop <= 0:
+            logging.warning("Live COP <=0 outside cycle; using previous COP.")
+            live_cop = prev_cop
+
         # Update prev for next loop
         prev_hp_power = hp_power
         prev_flow_temp = current_flow_temp
         prev_cop = live_cop
-
-        # COP fallback if <=0 outside cycles
-        if live_cop <= 0 and not cycle_type:
-            live_cop = 3.5
-            logging.warning("Live COP was <=0; using fallback 3.5")
 
         # Debug logging for mode decision
         logging.info(f"Mode decision: optimal_mode='{optimal_mode}', total_demand={smoothed_demand:.2f} kW, "
