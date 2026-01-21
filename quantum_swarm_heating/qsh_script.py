@@ -243,15 +243,15 @@ prod_history = deque(maxlen=5)
 grid_history = deque(maxlen=5)
 low_delta_persist = 0
 low_power_start_time = None
-prev_hp_power = 0.0
-prev_flow_temp = 0.0
+prev_hp_power = 1.0  # Better init: assume moderate power
+prev_flow_temp = 35.0  # Better init: typical flow
 prev_cop = 3.5
 cycle_type = None
 cycle_start = None
 action_counter = 0
 prev_flow = 35.0
 prev_mode = 'off'
-prev_demand = 0.0
+prev_demand = 3.5  # Better init: fallback demand
 prev_time = time.time()
 prev_actual_loss = 0.0
 reward_history = deque(maxlen=1000)
@@ -259,6 +259,7 @@ loss_history = deque(maxlen=1000)
 pause_count = 0
 undetected_count = 0
 enable_plots = user_options.get('enable_plots', False)
+first_loop = True  # New: Flag for startup
 
 def shutdown_handler(sig, frame):
     mean_reward = sum(reward_history) / len(reward_history) if reward_history else 0
@@ -280,7 +281,7 @@ signal.signal(signal.SIGINT, shutdown_handler)
 signal.signal(signal.SIGTERM, shutdown_handler)
 
 def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow, prev_mode, prev_demand):
-    global low_delta_persist, low_power_start_time, prev_hp_power, prev_flow_temp, prev_cop, cycle_type, demand_history, prod_history, grid_history, prev_time, cycle_start, prev_actual_loss, pause_count, undetected_count
+    global low_delta_persist, low_power_start_time, prev_hp_power, prev_flow_temp, prev_cop, cycle_type, demand_history, prod_history, grid_history, prev_time, cycle_start, prev_actual_loss, pause_count, undetected_count, first_loop
     try:
         current_time = time.time()
         time_delta = current_time - prev_time
@@ -450,20 +451,27 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         cop_delta = live_cop - prev_cop
         loss_delta = actual_loss - prev_actual_loss
         
-        # Standalone cycle detection
-        if flow_delta_actual <= FLOW_TEMP_DROP_THRESHOLD or cop_delta <= COP_DROP_THRESHOLD or demand_delta <= -DEMAND_DELTA_THRESHOLD or loss_delta <= -LOSS_DELTA_THRESHOLD:
-            cycle_type = 'defrost'
-            if cycle_start is None:
-                cycle_start = current_time
-            logging.info(f"Defrost cycle detected: Flow delta {flow_delta_actual:.2f}°C / COP delta {cop_delta:.2f} / Demand delta {demand_delta:.2f} / Loss delta {loss_delta:.2f}")
-        elif power_delta >= POWER_SPIKE_THRESHOLD or flow_delta_actual >= FLOW_TEMP_SPIKE_THRESHOLD or cop_delta >= COP_SPIKE_THRESHOLD or demand_delta >= DEMAND_DELTA_THRESHOLD or loss_delta >= LOSS_DELTA_THRESHOLD:
-            cycle_type = 'oil_recovery'
-            if cycle_start is None:
-                cycle_start = current_time
-            logging.info(f"Oil recovery cycle detected: Power delta {power_delta:.2f}kW / Flow delta {flow_delta_actual:.2f}°C / COP delta {cop_delta:.2f} / Demand delta {demand_delta:.2f} / Loss delta {loss_delta:.2f}")
-        else:
+        # Skip cycle detection on first loop to avoid false positives
+        if first_loop:
+            logging.info("Startup mode: Skipping cycle detection to initialize prev values.")
             cycle_type = None
             cycle_start = None
+            first_loop = False
+        else:
+            # Standalone cycle detection
+            if flow_delta_actual <= FLOW_TEMP_DROP_THRESHOLD or cop_delta <= COP_DROP_THRESHOLD or demand_delta <= -DEMAND_DELTA_THRESHOLD or loss_delta <= -LOSS_DELTA_THRESHOLD:
+                cycle_type = 'defrost'
+                if cycle_start is None:
+                    cycle_start = current_time
+                logging.info(f"Defrost cycle detected: Flow delta {flow_delta_actual:.2f}°C / COP delta {cop_delta:.2f} / Demand delta {demand_delta:.2f} / Loss delta {loss_delta:.2f}")
+            elif power_delta >= POWER_SPIKE_THRESHOLD or flow_delta_actual >= FLOW_TEMP_SPIKE_THRESHOLD or cop_delta >= COP_SPIKE_THRESHOLD or demand_delta >= DEMAND_DELTA_THRESHOLD or loss_delta >= LOSS_DELTA_THRESHOLD:
+                cycle_type = 'oil_recovery'
+                if cycle_start is None:
+                    cycle_start = current_time
+                logging.info(f"Oil recovery cycle detected: Power delta {power_delta:.2f}kW / Flow delta {flow_delta_actual:.2f}°C / COP delta {cop_delta:.2f} / Demand delta {demand_delta:.2f} / Loss delta {loss_delta:.2f}")
+            else:
+                cycle_type = None
+                cycle_start = None
         
         if hp_power < MIN_MODULATION_POWER and smoothed_demand > 0:
             if low_power_start_time is None:
@@ -485,7 +493,7 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
                 logging.info(f"HP power recovered: Ending monitor (cycle: {cycle_type or 'none'}, duration {time_in_low:.0f}s)")
             low_power_start_time = None
         
-        if abs(demand_delta) >= DEMAND_DELTA_THRESHOLD and not cycle_type:
+        if not first_loop and abs(demand_delta) >= DEMAND_DELTA_THRESHOLD and not cycle_type:
             logging.warning(f"Potential undetected cycle: large Δdemand {demand_delta:.2f} kW without patterns")
             undetected_count += 1
         
