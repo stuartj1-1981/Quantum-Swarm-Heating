@@ -13,7 +13,6 @@ from collections import defaultdict, deque
 import signal
 import sys
 import numpy as np
-import matplotlib.pyplot as plt  # For plots if enabled
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -268,6 +267,7 @@ def shutdown_handler(sig, frame):
     demand_std = np.std(demand_list) if demand_list else 0
     logging.info(f"Shutdown summary: mean_reward={mean_reward:.2f}, mean_loss={mean_loss:.2f}, pause_count={pause_count}, demand_std={demand_std:.2f}, undetected_events={undetected_count}")
     if enable_plots and demand_list:
+        import matplotlib.pyplot as plt  # Import here to avoid ModuleNotFoundError if not enabled
         plt.plot(demand_list)
         plt.title('Demand History')
         plt.xlabel('Steps')
