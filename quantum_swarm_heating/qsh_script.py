@@ -326,56 +326,34 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         forecast_min_temp = min(forecast_temps) if forecast_temps else ext_temp
         upcoming_cold = any(f['temperature'] < 5 for f in forecast if 'temperature' in f and (datetime.fromisoformat(f['datetime']) - datetime.now()) < timedelta(hours=12))
         forecast_winds = [f['wind_speed'] for f in forecast if 'wind_speed' in f and (datetime.fromisoformat(f['datetime']) - datetime.now()) < timedelta(hours=12)]
-        upcoming_high_wind = any(w > 20 for w in forecast_winds)
-        
-        operation_mode = fetch_ha_entity(config['entities']['water_heater'], 'operation_mode')
-        valid_modes = {'electric', 'off', 'heat_pump', 'high_demand'}
-        if operation_mode not in valid_modes:
-            operation_mode = 'off'
-            logging.warning("Unknown operation_mode—defaulting to 'off'.")
-        hot_water_active = operation_mode == 'high_demand'
-        if hot_water_active:
-            logging.info("Hot water cycle active—pausing space heating sets.")
-            prev_time = current_time
-            prev_actual_loss = prev_actual_loss  # No update during hot water
-            return action_counter + 1, prev_flow, prev_mode, prev_demand
+        upcoming_high_wind = any(f['wind_speed'] > 30 for f in forecast if 'wind_speed' in f and (datetime.fromisoformat(f['datetime']) - datetime.now()) < timedelta(hours=12))
+        logging.info(f"Forecast: min_temp={forecast_min_temp:.1f}°C, upcoming_cold={upcoming_cold}, upcoming_high_wind={upcoming_high_wind}")
 
-        # Fetch rates
-        current_day_rates = parse_rates_array(fetch_ha_entity(config['entities']['current_day_rates'], 'rates'))
-        suppress_next_warning = datetime.now(timezone.utc).hour < 16
-        next_day_rates = parse_rates_array(fetch_ha_entity(config['entities']['next_day_rates'], 'rates'), suppress_warning=suppress_next_warning)
-        export_current_day = parse_rates_array(fetch_ha_entity(config['entities']['current_day_export_rates'], 'rates'))
-        export_next_day = parse_rates_array(fetch_ha_entity(config['entities']['next_day_export_rates'], 'rates'), suppress_warning=suppress_next_warning)
-        all_rates = current_day_rates + next_day_rates
-        all_export_rates = export_current_day + export_next_day
-        if all_rates != prev_all_rates:
-            prev_all_rates = all_rates
-            logging.info(f"Updated rates: {len(all_rates)} slots fetched.")
-        current_rate = get_current_rate(all_rates)
-        current_export_rate = get_current_rate(all_export_rates) or config['fallback_rates']['export']
+        room_targets = {room: target_temp + ZONE_OFFSETS.get(room, 0.0) for room in config['rooms']}
+        for room in config['persistent_zones']:
+            room_targets[room] = 25.0
 
-        # Per-room targets and currents
-        room_targets = {}
-        current_temps = {}
-        for room in config['rooms']:
-            if room in config['persistent_zones']:
-                room_targets[room] = 25.0
-            else:
-                room_targets[room] = target_temp + ZONE_OFFSETS.get(room, 0.0)
-            sensor_key = config['zone_sensor_map'].get(room)
-            if sensor_key:
-                current_temps[room] = float(fetch_ha_entity(config['entities'][sensor_key]) or room_targets[room])
-
-        # Calculate losses and demands
         actual_loss = total_loss(config, ext_temp, room_targets, chill_factor, loss_coeff, sum_af)
-        heat_up_power = sum(config['thermal_mass_per_m2'] * config['rooms'][room] * max(0, room_targets[room] - current_temps.get(room, room_targets[room])) / config['heat_up_tau_h'] for room in config['rooms'])
-        total_demand = actual_loss + heat_up_power
-        production = float(fetch_ha_entity(config['entities']['solar_production']) or 0.0) / 1000.0
+        heat_up_power = sum(config['rooms'][room] * config['thermal_mass_per_m2'] * (room_targets[room] - fetch_ha_entity(config['entities'].get(config['zone_sensor_map'].get(room, 'independent_sensor01'))) or 0.0 for room in config['rooms']) / config['heat_up_tau_h']
+
+        production = float(fetch_ha_entity(config['entities']['solar_production']) or 0.0)
         prod_history.append(production)
         smoothed_prod = sum(prod_history) / len(prod_history)
         excess_solar = calc_solar_gain(config, smoothed_prod)
 
-        soc = float(fetch_ha_entity(config['entities']['battery_soc']) or 50.0)
+        soc = float(fetch_ha_entity(config['entities']['battery_soc']) or 0.0)
+        current_day_rates = parse_rates_array(fetch_ha_entity(config['entities']['current_day_rates'], 'rates') or [], suppress_warning=(datetime.now(timezone.utc).hour < 16))
+        next_day_rates = parse_rates_array(fetch_ha_entity(config['entities']['next_day_rates'], 'rates') or [], suppress_warning=(datetime.now(timezone.utc).hour < 16))
+        current_day_export = parse_rates_array(fetch_ha_entity(config['entities']['current_day_export_rates'], 'rates') or [], suppress_warning=(datetime.now(timezone.utc).hour < 16))
+        next_day_export = parse_rates_array(fetch_ha_entity(config['entities']['next_day_export_rates'], 'rates') or [], suppress_warning=(datetime.now(timezone.utc).hour < 16))
+        all_rates = current_day_rates + next_day_rates + current_day_export + next_day_export
+        current_rate = get_current_rate(current_day_rates)
+
+        hot_water_active = fetch_ha_entity(config['entities']['water_heater']) == 'on'
+        if hot_water_active:
+            logging.info("Hot water active: Pausing space heating optimizations.")
+            optimal_mode = 'off'
+        
         grid_power = float(fetch_ha_entity(config['entities']['grid_power']) or 0.0)
         grid_history.append(grid_power)
         smoothed_grid = sum(grid_history) / len(grid_history)
@@ -548,6 +526,20 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
                 reward_adjust -= 0.4
         if len(loss_history) >= 5 and sum(list(loss_history)[-5:]) / 5 < 1:
             reward_adjust += 0.4
+
+        # Cycle-aware rewards: Trigger only on cycle completion
+        if pause_end and current_time >= pause_end:
+            if len(demand_history) >= 5:
+                recent_demand_std = np.std(list(demand_history)[-5:])  # Last 5 for post-pause stability
+                if recent_demand_std < 0.5:  # Stable recovery (tunable threshold)
+                    reward_adjust += 0.4  # Bonus for smooth rebound
+                    logging.info(f"Cycle-aware bonus: +0.4 for low demand_std {recent_demand_std:.2f} kW post-recovery (type: {cycle_type})")
+                elif recent_demand_std > 1.0:  # Volatile recovery
+                    reward_adjust -= 0.3  # Mild penalty
+                    logging.info(f"Cycle-aware penalty: -0.3 for high demand_std {recent_demand_std:.2f} kW post-recovery (type: {cycle_type})")
+            pause_end = None
+            cycle_type = None
+            cycle_start = None
 
         # Base reward with scaling
         reward = -0.8 * current_rate * total_demand_adjusted / live_cop
