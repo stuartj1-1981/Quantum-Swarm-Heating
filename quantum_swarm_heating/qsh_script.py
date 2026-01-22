@@ -325,20 +325,32 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         forecast_temps = []
         forecast_winds = []
         for f in forecast:
+            if not isinstance(f, dict):
+                logging.warning("Invalid forecast entry: not a dict—skipping.")
+                continue
             try:
                 dt = datetime.fromisoformat(f['datetime'])
                 delta_time = dt - datetime.now()
                 if 'temperature' in f and delta_time < timedelta(hours=24):
-                    forecast_temps.append(f['temperature'])
+                    try:
+                        temp = float(f['temperature'])
+                        forecast_temps.append(temp)
+                    except ValueError:
+                        logging.warning(f"Invalid temperature value in forecast: {f['temperature']}")
                 if 'wind_speed' in f and delta_time < timedelta(hours=12):
-                    forecast_winds.append(f['wind_speed'])
+                    try:
+                        wind = float(f['wind_speed'])
+                        forecast_winds.append(wind)
+                    except ValueError:
+                        logging.warning(f"Invalid wind_speed value in forecast: {f['wind_speed']}")
+            except KeyError:
+                logging.warning("Forecast entry missing 'datetime'—skipping.")
             except ValueError:
                 logging.warning(f"Invalid datetime in forecast: {f.get('datetime')}")
-                continue
-        
+
         forecast_min_temp = min(forecast_temps) if forecast_temps else ext_temp
-        upcoming_cold = any(t < 5 for t in forecast_temps if t is not None)
-        upcoming_high_wind = any(w > 30 for w in forecast_winds if w is not None)
+        upcoming_cold = any(t < 5 for t in forecast_temps)
+        upcoming_high_wind = any(w > 30 for w in forecast_winds)
         logging.info(f"Forecast: min_temp={forecast_min_temp:.1f}°C, upcoming_cold={upcoming_cold}, upcoming_high_wind={upcoming_high_wind}")
 
         room_targets = {room: target_temp + ZONE_OFFSETS.get(room, 0.0) for room in config['rooms']}
@@ -346,12 +358,12 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
             room_targets[room] = 25.0
 
         actual_loss = total_loss(config, ext_temp, room_targets, chill_factor, loss_coeff, sum_af)
-        heat_up_power = sum(config['rooms'][room] * config['thermal_mass_per_m2'] * (room_targets[room] - float(fetch_ha_entity(config['entities'].get(config['zone_sensor_map'].get(room, 'independent_sensor01'))) or '0.0')) for room in config['rooms']) / config['heat_up_tau_h']
+        heat_up_power = sum(config['rooms'][room] * config['thermal_mass_per_m2'] * (room_targets[room] - float(fetch_ha_entity(config['entities'].get(config['zone_sensor_map'].get(room, 'independent_sensor01'))) or 0.0)) for room in config['rooms']) / config['heat_up_tau_h']
         total_demand = actual_loss + heat_up_power
 
         production = float(fetch_ha_entity(config['entities']['solar_production']) or 0.0)
         prod_history.append(production)
-        smoothed_prod = sum(prod_history) / len(prod_history)
+        smoothed_prod = sum(prod_history) / len(prod_history) if prod_history else 0.0
         excess_solar = calc_solar_gain(config, smoothed_prod)
 
         soc = float(fetch_ha_entity(config['entities']['battery_soc']) or 0.0)
@@ -369,12 +381,12 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         
         grid_power = float(fetch_ha_entity(config['entities']['grid_power']) or 0.0)
         grid_history.append(grid_power)
-        smoothed_grid = sum(grid_history) / len(grid_history)
+        smoothed_grid = sum(grid_history) / len(grid_history) if grid_history else 0.0
         logging.info(f"Fetched grid_power: {grid_power:.2f} W, Smoothed: {smoothed_grid:.2f} W")
         logging.info(f"Fetched solar_production: {production:.2f} kW, Smoothed: {smoothed_prod:.2f} kW")
 
         demand_history.append(total_demand)
-        smoothed_demand = sum(demand_history) / len(demand_history)
+        smoothed_demand = sum(demand_history) / len(demand_history) if demand_history else 0.0
 
         import_kw = max(0, -smoothed_grid / 1000.0)
         export_kw = max(0, smoothed_grid / 1000.0)
@@ -435,6 +447,9 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         if soc > 80 and export_kw > 1 and current_rate > 0.3:
             optimal_mode = 'off'
             logging.info("Export optimized pause: high SOC and export during peak rate")
+        
+        if hot_water_active:
+            optimal_mode = 'off'  # Moved after main decision to override if necessary
         
         current_flow_temp = float(fetch_ha_entity(config['entities']['hp_flow_temp']) or 35.0)
         cop_value = fetch_ha_entity(config['entities']['hp_cop'])
@@ -570,11 +585,11 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         export_bonus = (smoothed_grid / 1000.0) * config['fallback_rates']['export'] * 0.1 if smoothed_grid > 1000 else 0
 
         if volatile:
-            demand_penalty *= 0.5
-            flow_penalty *= 0.5
-            ramp_penalty *= 0.5
-            dt_penalty *= 0.5
-            grid_penalty *= 0.5
+            demand_penalty *= 1.5  # Increased penalty for volatility (corrected from previous 0.5)
+            flow_penalty *= 1.5
+            ramp_penalty *= 1.5
+            dt_penalty *= 1.5
+            grid_penalty *= 1.5
 
         reward -= (demand_penalty + flow_penalty + ramp_penalty + dt_penalty + grid_penalty)
         reward += export_bonus
