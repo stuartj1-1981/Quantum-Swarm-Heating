@@ -325,7 +325,7 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         forecast_temps = [f['temperature'] for f in forecast if 'temperature' in f and (datetime.fromisoformat(f['datetime']) - datetime.now()) < timedelta(hours=24)]
         forecast_min_temp = min(forecast_temps) if forecast_temps else ext_temp
         upcoming_cold = any(f['temperature'] < 5 for f in forecast if 'temperature' in f and (datetime.fromisoformat(f['datetime']) - datetime.now()) < timedelta(hours=12))
-        forecast_winds = [f['wind_speed'] for f in forecast if 'wind_speed' in f and (datetime.fromisoformat(f['datetime']) - datetime.now()) < timedelta(hours=12)]
+        forecast_winds = [f['wind_speed'] for f in forecast if 'wind_speed' in f and (datetime.fromisoformat(f['datetime']) - datetime.now()) < timedelta(hours=12))
         upcoming_high_wind = any(f['wind_speed'] > 30 for f in forecast if 'wind_speed' in f and (datetime.fromisoformat(f['datetime']) - datetime.now()) < timedelta(hours=12))
         logging.info(f"Forecast: min_temp={forecast_min_temp:.1f}°C, upcoming_cold={upcoming_cold}, upcoming_high_wind={upcoming_high_wind}")
 
@@ -334,7 +334,7 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
             room_targets[room] = 25.0
 
         actual_loss = total_loss(config, ext_temp, room_targets, chill_factor, loss_coeff, sum_af)
-        heat_up_power = sum(config['rooms'][room] * config['thermal_mass_per_m2'] * (room_targets[room] - (fetch_ha_entity(config['entities'].get(config['zone_sensor_map'].get(room, 'independent_sensor01'))) or 0.0)) for room in config['rooms']) / config['heat_up_tau_h']
+        heat_up_power = sum(config['rooms'][room] * config['thermal_mass_per_m2'] * (room_targets[room] - float(fetch_ha_entity(config['entities'].get(config['zone_sensor_map'].get(room, 'independent_sensor01'))) or '0.0')) for room in config['rooms']) / config['heat_up_tau_h']
 
         production = float(fetch_ha_entity(config['entities']['solar_production']) or 0.0)
         prod_history.append(production)
