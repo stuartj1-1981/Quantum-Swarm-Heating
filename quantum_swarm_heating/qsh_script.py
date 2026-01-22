@@ -322,10 +322,23 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         logging.info(f"Computed loss_coeff: {loss_coeff:.3f} kW/°C, sum_af: {sum_af:.3f}")
         
         forecast = fetch_ha_entity(config['entities']['forecast_weather'], 'forecast') or []
-        forecast_temps = [f['temperature'] for f in forecast if 'temperature' in f and (datetime.fromisoformat(f['datetime']) - datetime.now()) < timedelta(hours=24)]
-        upcoming_cold = any(f['temperature'] < 5 for f in forecast if 'temperature' in f and (datetime.fromisoformat(f['datetime']) - datetime.now()) < timedelta(hours=12))
-        forecast_winds = [f['wind_speed'] for f in forecast if 'wind_speed' in f and (datetime.fromisoformat(f['datetime']) - datetime.now()) < timedelta(hours=12)]
-        upcoming_high_wind = any(f['wind_speed'] > 30 for f in forecast if 'wind_speed' in f and (datetime.fromisoformat(f['datetime']) - datetime.now()) < timedelta(hours=12))
+        forecast_temps = []
+        forecast_winds = []
+        for f in forecast:
+            try:
+                dt = datetime.fromisoformat(f['datetime'])
+                delta_time = dt - datetime.now()
+                if 'temperature' in f and delta_time < timedelta(hours=24):
+                    forecast_temps.append(f['temperature'])
+                if 'wind_speed' in f and delta_time < timedelta(hours=12):
+                    forecast_winds.append(f['wind_speed'])
+            except ValueError:
+                logging.warning(f"Invalid datetime in forecast: {f.get('datetime')}")
+                continue
+        
+        forecast_min_temp = min(forecast_temps) if forecast_temps else ext_temp
+        upcoming_cold = any(t < 5 for t in forecast_temps if t is not None)
+        upcoming_high_wind = any(w > 30 for w in forecast_winds if w is not None)
         logging.info(f"Forecast: min_temp={forecast_min_temp:.1f}°C, upcoming_cold={upcoming_cold}, upcoming_high_wind={upcoming_high_wind}")
 
         room_targets = {room: target_temp + ZONE_OFFSETS.get(room, 0.0) for room in config['rooms']}
@@ -334,6 +347,7 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
 
         actual_loss = total_loss(config, ext_temp, room_targets, chill_factor, loss_coeff, sum_af)
         heat_up_power = sum(config['rooms'][room] * config['thermal_mass_per_m2'] * (room_targets[room] - float(fetch_ha_entity(config['entities'].get(config['zone_sensor_map'].get(room, 'independent_sensor01'))) or '0.0')) for room in config['rooms']) / config['heat_up_tau_h']
+        total_demand = actual_loss + heat_up_power
 
         production = float(fetch_ha_entity(config['entities']['solar_production']) or 0.0)
         prod_history.append(production)
