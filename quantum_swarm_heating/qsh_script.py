@@ -352,6 +352,7 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         
         if hot_water_active:
             logging.info("Hot water active: Pausing all QSH processing (space heating optimizations, RL updates, cycle detection, and HA sets).")
+            optimal_mode = 'heat'
             optimal_flow = prev_flow  # Retain previous to avoid jumps on resume
             total_demand_adjusted = 0.0
             
