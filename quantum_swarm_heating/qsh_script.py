@@ -338,106 +338,7 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
             # No RL update, no history appends, no cycle detection
             
             # Urgent check only for mode change (set mode 'off' if changed, but skip flow/temp sets to avoid interference)
-            urgent = (optimal_mode != prev_mode)
-            if dfan_control and (action_counter % 10 == 0 or urgent):
-                mode_data = {'device_id': config['hp_hvac_service']['device_id'], 'hvac_mode': optimal_mode}
-                set_ha_service(config['hp_hvac_service']['domain'], config['hp_hvac_service']['service'], mode_data)
-                logging.info(f"DFAN action triggered (minimal): { 'urgent' if urgent else 'scheduled' } - setting mode {optimal_mode} (flow unchanged).")
-            else:
-                logging.info(f"Data gather: Shadow would set mode {optimal_mode}. (Action in {10 - (action_counter % 10)} loops)")
-            
-            # Set minimal shadows: mode, demand=0, flow=prev (skip RL reward/loss, room setpoints to avoid unnecessary HA calls)
-            set_ha_service('input_select', 'select_option', {'entity_id': 'input_select.qsh_shadow_mode', 'option': optimal_mode})
-            set_ha_service('input_select', 'select_option', {'entity_id': 'input_select.qsh_optimal_mode', 'option': optimal_mode})
-            set_ha_service('input_number', 'set_value', {'entity_id': 'input_number.qsh_total_demand', 'value': 0.0})
-            set_ha_service('input_number', 'set_value', {'entity_id': 'input_number.qsh_shadow_flow', 'value': optimal_flow})
-            
-            # Log shadow rooms only (no HA set during pause)
-            for room in config['rooms']:
-                logging.info(f"Shadow: Would set {room} to {room_targets[room]:.1f}°C")
-            
-            prev_time = current_time
-            return action_counter + 1, optimal_flow, optimal_mode, total_demand_adjusted
-        
-        # Proceed with normal QSH processing if not hot_water_active
-        ext_temp = float(fetch_ha_entity(config['entities']['outdoor_temp']) or 0.0)
-        wind_speed = float(fetch_ha_entity(config['entities']['forecast_weather'], 'wind_speed') or 0.0)
-        chill_factor = 1.0
-        delta = target_temp - ext_temp
-        if wind_speed > 5:
-            effective_temp = 13.12 + 0.6215 * ext_temp - 11.37 * wind_speed**0.16 + 0.3965 * ext_temp * wind_speed**0.16
-            chill_delta = max(0, ext_temp - effective_temp)
-            chill_factor = 1.0 + (chill_delta / max(1, delta))
-        logging.info(f"Computed chill_factor: {chill_factor:.2f} based on wind {wind_speed} km/h")
-        
-        loss_coeff = config['peak_loss'] / (config['design_target'] - config['peak_ext']) if (config['design_target'] > config['peak_ext']) else 0.0
-        sum_af = sum(config['rooms'][r] * config['facings'][r] for r in config['rooms'])
-        logging.info(f"Computed loss_coeff: {loss_coeff:.3f} kW/°C, sum_af: {sum_af:.3f}")
-        
-        forecast = fetch_ha_entity(config['entities']['forecast_weather'], 'forecast') or []
-        forecast_temps = []
-        forecast_winds = []
-        for f in forecast:
-            if not isinstance(f, dict):
-                logging.warning("Invalid forecast entry: not a dict—skipping.")
-                continue
-            try:
-                dt = datetime.fromisoformat(f['datetime'])
-                delta_time = dt - datetime.now()
-                if 'temperature' in f and delta_time < timedelta(hours=24):
-                    try:
-                        temp = float(f['temperature'])
-                        forecast_temps.append(temp)
-                    except ValueError:
-                        logging.warning(f"Invalid temperature value in forecast: {f['temperature']}")
-                if 'wind_speed' in f and delta_time < timedelta(hours=12):
-                    try:
-                        wind = float(f['wind_speed'])
-                        forecast_winds.append(wind)
-                    except ValueError:
-                        logging.warning(f"Invalid wind_speed value in forecast: {f['wind_speed']}")
-            except KeyError:
-                logging.warning("Forecast entry missing 'datetime'—skipping.")
-            except ValueError:
-                logging.warning(f"Invalid datetime in forecast: {f.get('datetime')}")
-        forecast_min_temp = min(forecast_temps) if forecast_temps else ext_temp
-        upcoming_cold = any(t < 5 for t in forecast_temps)
-        upcoming_high_wind = any(w > 30 for w in forecast_winds)
-        logging.info(f"Forecast: min_temp={forecast_min_temp:.1f}°C, upcoming_cold={upcoming_cold}, upcoming_high_wind={upcoming_high_wind}")
-
-        room_targets = {room: target_temp + ZONE_OFFSETS.get(room, 0.0) for room in config['rooms']}
-        for room in config['persistent_zones']:
-            room_targets[room] = 25.0
-
-        actual_loss = total_loss(config, ext_temp, room_targets, chill_factor, loss_coeff, sum_af)
-        heat_up_power = sum(config['rooms'][room] * config['thermal_mass_per_m2'] * (room_targets[room] - float(fetch_ha_entity(config['entities'].get(config['zone_sensor_map'].get(room, 'independent_sensor01'))) or 0.0)) for room in config['rooms']) / config['heat_up_tau_h']
-        total_demand = actual_loss + heat_up_power
-
-        production = float(fetch_ha_entity(config['entities']['solar_production']) or 0.0)
-        prod_history.append(production)
-        smoothed_prod = sum(prod_history) / len(prod_history) if prod_history else 0.0
-        excess_solar = calc_solar_gain(config, smoothed_prod)
-
-        soc = float(fetch_ha_entity(config['entities']['battery_soc']) or 0.0)
-        current_day_rates = parse_rates_array(fetch_ha_entity(config['entities']['current_day_rates'], 'rates') or [], suppress_warning=(datetime.now(timezone.utc).hour < 16))
-        next_day_rates = parse_rates_array(fetch_ha_entity(config['entities']['next_day_rates'], 'rates') or [], suppress_warning=(datetime.now(timezone.utc).hour < 16))
-        current_day_export = parse_rates_array(fetch_ha_entity(config['entities']['current_day_export_rates'], 'rates') or [], suppress_warning=(datetime.now(timezone.utc).hour < 16))
-        next_day_export = parse_rates_array(fetch_ha_entity(config['entities']['next_day_export_rates'], 'rates') or [], suppress_warning=(datetime.now(timezone.utc).hour < 16))
-        all_rates = current_day_rates + next_day_rates + current_day_export + next_day_export
-        current_rate = get_current_rate(current_day_rates)
-
-        grid_power = float(fetch_ha_entity(config['entities']['grid_power']) or 0.0)
-        grid_history.append(grid_power)
-        smoothed_grid = sum(grid_history) / len(grid_history) if grid_history else 0.0
-        logging.info(f"Fetched grid_power: {grid_power:.2f} W, Smoothed: {smoothed_grid:.2f} W")
-        logging.info(f"Fetched solar_production: {production:.2f} kW, Smoothed: {smoothed_prod:.2f} kW")
-
-        demand_history.append(total_demand)
-        smoothed_demand = sum(demand_history) / len(demand_history) if demand_history else 0.0
-
-        import_kw = max(0, -smoothed_grid / 1000.0)
-        export_kw = max(0, smoothed_grid / 1000.0)
-        total_demand_adjusted = max(0, smoothed_demand - excess_solar - export_kw + import_kw)
+            urgent = ...(truncated 6946 characters)... - export_kw + import_kw)
 
         demand_delta = total_demand_adjusted - prev_demand
         logging.info(f"Δdemand: {demand_delta:.2f} kW")
@@ -447,6 +348,12 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         elif abs(demand_delta) > 2.0:
             logging.warning(f"Input anomaly detected: Demand swing {total_demand_adjusted:.2f} from {prev_demand:.2f} kW—using average.")
             total_demand_adjusted = (total_demand_adjusted + prev_demand) / 2.0
+
+        # DFAN RL Enhancement: Compute demand_std for volatility penalty
+        if len(demand_history) >= 2:
+            demand_std = np.std(list(demand_history))
+        else:
+            demand_std = 0.0
 
         delta_t = float(fetch_ha_entity(config['entities']['primary_diff']) or 3.0)
         hp_power = float(fetch_ha_entity(config['entities']['hp_energy_rate']) or 0.0)
@@ -586,7 +493,7 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
                      f"ext_temp={ext_temp:.1f}°C, upcoming_cold={upcoming_cold}, upcoming_high_wind={upcoming_high_wind}, current_rate={current_rate:.3f} GBP/kWh, "
                      f"hot_water_active={hot_water_active}")
 
-        states = torch.tensor([current_rate, soc, live_cop, optimal_flow, smoothed_demand, excess_solar, wind_speed, forecast_min_temp, smoothed_grid, delta_t, hp_power, chill_factor], dtype=torch.float32)
+        states = torch.tensor([current_rate, soc, live_cop, optimal_flow, smoothed_demand, excess_solar, wind_speed, forecast_min_temp, smoothed_grid, delta_t, hp_power, chill_factor, demand_std], dtype=torch.float32)
 
         action = model.actor(states.unsqueeze(0))
 
@@ -643,6 +550,13 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
             reward += 0.3
         if abs(flow_delta) < 0.5:
             reward += 0.2
+
+        # DFAN RL Enhancement: Volatility penalty based on demand_std
+        volatility_penalty = 0.0
+        if demand_std > 0.5:
+            volatility_penalty = 0.2 * (demand_std - 0.5)
+        reward -= volatility_penalty
+        logging.info(f"DFAN RL: demand_std={demand_std:.2f} kW, volatility_penalty={volatility_penalty:.2f}")
 
         value = model.critic(states.unsqueeze(0))
         loss = (reward - value).pow(2).mean()
@@ -721,7 +635,7 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         return action_counter + 1, prev_flow, prev_mode, prev_demand
 
 graph = build_dfan_graph(HOUSE_CONFIG)
-state_dim = 12  # Updated for chill_factor
+state_dim = 13  # Updated for chill_factor + demand_std
 action_dim = 2
 model = ActorCritic(state_dim, action_dim)
 optimizer = optim.Adam(model.parameters(), lr=0.001)
