@@ -335,74 +335,7 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
             cycle_start = None
             pause_end = None
             
-            # No RL update, no history appends, no cycle detection
-            
-            # Urgent check only for mode change (set mode 'off' if changed, but skip flow/temp sets to avoid interference)
-            urgent = optimal_mode != prev_mode
-            if dfan_control and urgent:
-                mode_data = {'device_id': config['hp_hvac_service']['device_id'], 'hvac_mode': optimal_mode}
-                set_ha_service(config['hp_hvac_service']['domain'], config['hp_hvac_service']['service'], mode_data)
-            
-            prev_time = current_time
-            return action_counter + 1, prev_flow, optimal_mode, total_demand_adjusted
-        else:
-            # Normal DFAN processing
-            ext_temp = float(fetch_ha_entity(config['entities']['outdoor_temp']) or 0.0)
-            forecast_data = fetch_ha_entity(config['entities']['forecast_weather'], 'forecast') or []
-            wind_speed = float(fetch_ha_entity(config['entities']['forecast_weather'], 'wind_speed') or 0.0)
-            chill_factor = 1.0 + (wind_speed / 80.0)  # Approximated to match logs (e.g., 1.30 for 24.5 km/h)
-            logging.info(f"Computed chill_factor: {chill_factor:.2f} based on wind {wind_speed:.1f} km/h")
-            sum_af = sum(a * f for a, f in zip(config['rooms'].values(), config['facings'].values()))
-            loss_coeff = 0.208
-            logging.info(f"Computed loss_coeff: {loss_coeff:.3f} kW/°C, sum_af: {sum_af:.3f}")
-            if forecast_data:
-                forecast_min_temp = min(f.get('temperature', ext_temp) for f in forecast_data)
-                upcoming_high_wind = any(f.get('wind_speed', 0) > 25 for f in forecast_data)
-            else:
-                forecast_min_temp = ext_temp
-                upcoming_high_wind = wind_speed > 25
-            upcoming_cold = forecast_min_temp < 5
-            logging.info(f"Forecast: min_temp={forecast_min_temp:.1f}°C, upcoming_cold={upcoming_cold}, upcoming_high_wind={upcoming_high_wind}")
-            grid_power = float(fetch_ha_entity(config['entities']['grid_power']) or 0.0)
-            grid_history.append(grid_power)
-            smoothed_grid = np.mean(grid_history)
-            logging.info(f"Fetched grid_power: {grid_power:.2f} W, Smoothed: {smoothed_grid:.2f} W")
-            solar_production = float(fetch_ha_entity(config['entities']['solar_production']) or 0.0)
-            prod_history.append(solar_production)
-            smoothed_prod = np.mean(prod_history)
-            logging.info(f"Fetched solar_production: {solar_production:.2f} kW, Smoothed: {smoothed_prod:.2f} kW")
-            net_grid = smoothed_grid / 1000.0
-            logging.info(f"Δdemand: {net_grid:.2f} kW")
-            room_targets = {room: target_temp + ZONE_OFFSETS.get(room, 0.0) for room in config['rooms']}
-            for room in config['persistent_zones']:
-                room_targets[room] = 25.0
-            actual_loss = total_loss(config, ext_temp, room_targets, chill_factor, loss_coeff, sum_af)
-            solar_gain = calc_solar_gain(config, smoothed_prod)
-            heat_up_power = 0  # Can expand with thermal_mass_per_m2 * delta_temp / (heat_up_tau_h * 3600) if needed
-            total_demand = actual_loss - solar_gain + heat_up_power
-            demand_history.append(total_demand)
-            smoothed_demand = np.mean(demand_history)
-            export_kw = max(0, -net_grid)
-            import_kw = max(0, net_grid)
-            total_demand_adjusted = smoothed_demand + import_kw - export_kw
-            excess_solar = max(0, smoothed_prod - 0.5)  # Placeholder threshold for excess
-            soc = float(fetch_ha_entity(config['entities']['battery_soc']) or 0.0)
-            current_day_rates = parse_rates_array(fetch_ha_entity(config['entities']['current_day_rates'], 'rates') or [])
-            current_rate = get_current_rate(current_day_rates)
-
-        demand_delta = total_demand_adjusted - prev_demand
-        logging.info(f"Δdemand: {demand_delta:.2f} kW")
-        if total_demand_adjusted > 20:
-            total_demand_adjusted = 3.5
-            logging.warning("Anomaly: demand >20 kW, fallback to 3.5 kW")
-        elif abs(demand_delta) > 2.0:
-            logging.warning(f"Input anomaly detected: Demand swing {total_demand_adjusted:.2f} from {prev_demand:.2f} kW—using average.")
-            total_demand_adjusted = (total_demand_adjusted + prev_demand) / 2.0
-
-        if len(demand_history) >= 2:
-            demand_std = np.std(list(demand_history))
-        else:
-            demand_std = 0.0
+            # No RL update, no history appends, no cycle detec...(truncated 4425 characters)...        demand_std = 0.0
 
         delta_t = float(fetch_ha_entity(config['entities']['primary_diff']) or 3.0)
         hp_power = float(fetch_ha_entity(config['entities']['hp_energy_rate']) or 0.0)
