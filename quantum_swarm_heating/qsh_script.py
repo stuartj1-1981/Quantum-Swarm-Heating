@@ -131,7 +131,7 @@ HOUSE_CONFIG = {
         'cloaks_heating': 'sensor.wc_heating',
         'bed1_heating': 'sensor.master_bedroom_heating',
         'bed2_heating': 'sensor.fins_room_heating',
-        'bed3_heating': 'sensor.office_heatingg',
+        'bed3_heating': 'sensor.office_heating',
         'bed4_heating': 'sensor.b1llz_room_heating',
         'bathroom_heating': 'sensor.bathroom_heating',
         'ensuite1_heating': 'sensor.ensuite1_heating',
