@@ -110,7 +110,7 @@ HOUSE_CONFIG = {
         'current_day_export_rates': 'event.octopus_energy_electricity_21l3885048_2700006856140_export_current_day_rates',
         'next_day_export_rates': 'event.octopus_energy_electricity_21l3885048_2700006856140_export_next_day_rates',
         'solar_production': 'sensor.envoy_122019031249_current_power_production',
-        'outdoor_temp': 'sensor.front_door_temperature_measurement',
+        'outdoor_temp': 'sensor.front_door_motion_temperature',
         'forecast_weather': 'weather.home',
         'hp_output': 'sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_live_heat_output',
         'hp_energy_rate': 'sensor.shellyem_c4d8d5001966_channel_1_power',
