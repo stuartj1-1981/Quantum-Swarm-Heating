@@ -1,5 +1,5 @@
 name: Quantum Swarm Heating Add-on
-version: "1.2.3"
+version: "1.2.4"
 slug: quantum_swarm_heating
 description: Adaptive RL heating control with PyTorch in HA
 arch:
