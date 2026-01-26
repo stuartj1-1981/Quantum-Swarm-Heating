@@ -167,7 +167,7 @@ HOUSE_CONFIG = {
     },
     # New: Per-room control mode toggle (direct for new TRVs, indirect for Tado)
     'room_control_mode': {
-        'lounge': 'direct',  # Starter: Test one new TRV in direct
+        'lounge': 'indirect',  # Starter: Test one new TRV in direct
         'open_plan': 'indirect',
         'utility': 'indirect',
         'cloaks': 'indirect',
