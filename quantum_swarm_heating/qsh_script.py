@@ -167,7 +167,7 @@ HOUSE_CONFIG = {
     },
     # New: Per-room control mode toggle (direct for new TRVs, indirect for Tado)
     'room_control_mode': {
-        'lounge': 'indirect', 
+        'lounge': 'direct',  # Starter: Test one new TRV in direct
         'open_plan': 'indirect',
         'utility': 'indirect',
         'cloaks': 'indirect',
@@ -289,7 +289,8 @@ def train_rl(model, optimizer, episodes=500):
     for _ in range(episodes):
         # Simulate hypothetical state (random for variety)
         sim_state = torch.rand(13) * 10
-        action = action.squeeze(0)
+        action, value = model(sim_state.unsqueeze(0))  # <--- Critical: This line defines 'action' and 'value'
+        action = action.squeeze(0)  # <--- Squeeze the batch dim (from (1, action_dim) to (action_dim,))
         
         # Simulate det logic approx (e.g., high demand → heat, high flow)
         sim_demand = sim_state[4].item()  # Index 4: smoothed_demand
