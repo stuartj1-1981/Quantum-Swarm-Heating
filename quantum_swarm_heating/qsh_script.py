@@ -62,21 +62,25 @@ def set_ha_service(domain, service, data):
         return
     headers = {'Authorization': f"Bearer {HA_TOKEN}"}
     entity_id = data.get('entity_id')
-    if isinstance(entity_id, list):
-        for eid in entity_id:
-            data_single = data.copy()
-            data_single['entity_id'] = eid
-            try:
-                r = requests.post(f"{HA_URL}/services/{domain}/{service}", headers=headers, json=data_single)
-                r.raise_for_status()
-            except Exception as e:
-                logging.error(f"HA set error for {eid}: {e}")
-    else:
+    retries = 0
+    max_retries = 3
+    while retries < max_retries:
         try:
-            r = requests.post(f"{HA_URL}/services/{domain}/{service}", headers=headers, json=data)
-            r.raise_for_status()
+            if isinstance(entity_id, list):
+                for eid in entity_id:
+                    data_single = data.copy()
+                    data_single['entity_id'] = eid
+                    r = requests.post(f"{HA_URL}/services/{domain}/{service}", headers=headers, json=data_single)
+                    r.raise_for_status()
+            else:
+                r = requests.post(f"{HA_URL}/services/{domain}/{service}", headers=headers, json=data)
+                r.raise_for_status()
+            return  # Success
         except Exception as e:
-            logging.error(f"HA set error for {entity_id or data.get('device_id')}: {e}")
+            retries += 1
+            logging.warning(f"HA set error for {entity_id or data.get('device_id')}: {e} - retry {retries}/{max_retries}")
+            time.sleep(5)  # 5s sleep
+    logging.error(f"HA set failed after {max_retries} retries for {entity_id or data.get('device_id')}")
 
 # HOUSE_CONFIG
 HOUSE_CONFIG = {
@@ -492,7 +496,6 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         # Rates
         suppress_warning = datetime.now(timezone.utc).hour < 16
         next_day_rates = parse_rates_array(fetch_ha_entity(config['entities']['next_day_rates'], 'rates') or [])
-        # Retry for next_day too
         rates_retry = 0
         while not next_day_rates and rates_retry < 3:
             rates_retry += 1
@@ -568,9 +571,15 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
             low_delta_persist = 0
 
         if low_delta_persist >= 1:
-            low_frac_count = sum(1 for f in heating_percs.values() if f / 100 < 0.6)
-            logging.info(f"Low deltaT dissipation: {low_frac_count} low-frac zones—opening zones.")
-            for room in config['rooms']:
+            # Sort low-frac rooms by area descending for smarter opens
+            low_frac_rooms = [r for r, f in heating_percs.items() if f / 100 < 0.6]
+            low_frac_rooms = sorted(low_frac_rooms, key=lambda r: config['rooms'][r], reverse=True)  # Large first
+            open_count = int(random.uniform(3, 5))
+            to_open = low_frac_rooms[:open_count]
+            low_frac_count = len(low_frac_rooms)
+            logging.info(f"Low deltaT dissipation: {low_frac_count} low-frac zones—opening top {open_count} large emitters: {to_open}.")
+            successful_opens = 0
+            for room in to_open:
                 mode = config['room_control_mode'].get(room, 'indirect')
                 valve_entity = f'number.qsh_{room}_valve_target' if mode == 'direct' else None
                 effective_mode = 'indirect' if (mode == 'direct' and fetch_ha_entity(valve_entity) is None) else mode
@@ -579,6 +588,7 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
                     target_frac = random.uniform(80, 90) / 100
                     if dfan_control:
                         set_ha_service('number', 'set_value', {'entity_id': valve_entity, 'value': target_frac * 100})
+                        successful_opens += 1
                     logging.info(f"Direct dissipate: {room} to {target_frac*100:.0f}%")
                 else:
                     nudge = random.uniform(0.5, 1.0)
@@ -587,8 +597,10 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
                         room_nudge_accum[room] = new_accum
                         room_targets[room] += nudge
                         room_nudge_cooldown[room] = 0  # Bypass
+                        successful_opens += 1
                         logging.info(f"Indirect dissipate: {room} +{nudge:.1f}°C (accum {new_accum:.1f}°C)")
             
+            logging.info(f"Successful opens: {successful_opens}/{open_count}")
             low_delta_persist = 0  # Reset
         
         flow_min = float(fetch_ha_entity(config['entities']['flow_min_temp']) or 32.0)
@@ -851,7 +863,7 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         if delta_t > 3.0:
             reward += 0.5  # Bonus for healthy deltaT
         if live_cop <= 0.5:
-            reward -= 1.0  # Penalty on low COP (shutdown proxy)
+            reward -= 0.5  # Milder penalty on low COP (shutdown proxy)
 
         volatile = abs(demand_delta) > 1.0
 
