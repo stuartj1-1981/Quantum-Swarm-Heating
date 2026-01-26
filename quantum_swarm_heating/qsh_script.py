@@ -164,6 +164,22 @@ HOUSE_CONFIG = {
         'domain': 'climate',
         'service': 'set_hvac_mode',
         'device_id': 'b680894cd18521f7c706f1305b7333ea'
+    },
+    # New: Per-room control mode toggle (direct for new TRVs, indirect for Tado)
+    'room_control_mode': {
+        'lounge': 'indirect', 
+        'open_plan': 'indirect',
+        'utility': 'indirect',
+        'cloaks': 'indirect',
+        'bed1': 'indirect',
+        'bed2': 'indirect',
+        'bed3': 'indirect',
+        'bed4': 'indirect',
+        'bathroom': 'indirect',
+        'ensuite1': 'indirect',
+        'ensuite2': 'indirect',
+        'hall': 'indirect',
+        'landing': 'indirect'
     }
 }
 
@@ -196,6 +212,11 @@ COP_SPIKE_THRESHOLD = 0.3  # Lowered
 DEMAND_DELTA_THRESHOLD = 1.5  # Added for Δdemand
 LOSS_DELTA_THRESHOLD = 0.5  # Added for loss spikes (kW)
 EXTENDED_RECOVERY_TIME = 300  # For extended pauses
+
+# New globals for per-room nudges/drops (hysteresis, cooldown)
+room_nudge_hyst = {room: 0 for room in HOUSE_CONFIG['rooms']}
+room_nudge_cooldown = {room: 0 for room in HOUSE_CONFIG['rooms']}
+room_nudge_accum = {room: 0.0 for room in HOUSE_CONFIG['rooms']}  # Accumulated nudges for clamp
 
 # Global for persisted rates
 prev_all_rates = []
@@ -268,7 +289,6 @@ def train_rl(model, optimizer, episodes=500):
     for _ in range(episodes):
         # Simulate hypothetical state (random for variety)
         sim_state = torch.rand(13) * 10
-        action, value = model(sim_state.unsqueeze(0))
         action = action.squeeze(0)
         
         # Simulate det logic approx (e.g., high demand → heat, high flow)
@@ -347,7 +367,7 @@ signal.signal(signal.SIGINT, shutdown_handler)
 signal.signal(signal.SIGTERM, shutdown_handler)
 
 def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow, prev_mode, prev_demand):
-    global low_delta_persist, low_power_start_time, prev_hp_power, prev_flow_temp, prev_cop, cycle_type, demand_history, prod_history, grid_history, prev_time, cycle_start, prev_actual_loss, pause_count, undetected_count, first_loop, pause_end, prev_all_rates, epsilon, blend_factor, cop_history, heat_up_history, last_heat_time, consecutive_slow
+    global low_delta_persist, low_power_start_time, prev_hp_power, prev_flow_temp, prev_cop, cycle_type, demand_history, prod_history, grid_history, prev_time, cycle_start, prev_actual_loss, pause_count, undetected_count, first_loop, pause_end, prev_all_rates, epsilon, blend_factor, cop_history, heat_up_history, last_heat_time, consecutive_slow, room_nudge_hyst, room_nudge_cooldown, room_nudge_accum
     try:
         current_time = time.time()
         time_delta = current_time - prev_time
@@ -555,10 +575,85 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         actor_flow = 30 + (F.sigmoid(action[1]) * 20)
         optimal_flow = (blend_factor * actor_flow.item()) + ((1 - blend_factor) * det_flow)
 
-        # Flow react to valves (Point 2)
-        if avg_open_frac < 0.7:
-            optimal_flow -= 5 * (0.7 - avg_open_frac)
-            logging.info(f"Reducing flow -{5 * (0.7 - avg_open_frac):.1f}°C for low open frac.")
+        # Flow react to valves (Point 2) - now per-room hybrid
+        flow_adjust = 0.0
+        upward_nudge_count = 0
+        for room in config['rooms']:
+            mode = config['room_control_mode'].get(room, 'indirect')
+            frac = heating_percs[room] / 100.0
+            logging.info(f"Hybrid: {room} mode={mode}, frac={frac:.2f}")
+            
+            if mode == 'direct':
+                valve_entity = f'number.qsh_{room}_valve_target'  # Assume new entities for direct % set
+                if fetch_ha_entity(valve_entity) is None:
+                    logging.warning(f"No valve entity for {room}—fallback to indirect.")
+                    mode = 'indirect'
+            
+            if mode == 'direct':
+                # Direct: Set % open (ideal 0.75, adjust on deviations)
+                target_frac = 0.75
+                if frac < 0.60:
+                    target_frac += 0.20
+                if frac > 0.85 and mean_rate < 0.1:
+                    target_frac -= 0.15
+                target_frac = max(0.5, min(0.9, target_frac))
+                if dfan_control:
+                    set_ha_service('number', 'set_value', {'entity_id': valve_entity, 'value': target_frac * 100})
+                else:
+                    logging.info(f"Shadow direct: Would set {room} valve to {target_frac * 100:.0f}%")
+                # Softer drops for direct (less need for aggression)
+                if frac < 0.7:
+                    flow_adjust -= 3.0 * (0.7 - frac)  # Base -3.0, scale milder
+            else:
+                # Indirect: Nudge setpoints w/ hysteresis/cooldown/clamp
+                nudge = 0.0
+                if room_nudge_cooldown[room] > 0:
+                    room_nudge_cooldown[room] -= 1
+                    continue
+                if frac < 0.4:  # Crit low
+                    room_nudge_hyst[room] += 1
+                    if room_nudge_hyst[room] >= 2:
+                        nudge = 0.6
+                        upward_nudge_count += 1
+                elif frac < 0.6:  # Low
+                    room_nudge_hyst[room] += 1
+                    if room_nudge_hyst[room] >= 2:
+                        nudge = 0.3
+                        upward_nudge_count += 1
+                elif frac > 0.95:  # Crit high
+                    room_nudge_hyst[room] += 1
+                    if room_nudge_hyst[room] >= 2:
+                        nudge = -0.5
+                elif frac > 0.85:  # High
+                    room_nudge_hyst[room] += 1
+                    if room_nudge_hyst[room] >= 2:
+                        nudge = -0.25
+                else:
+                    room_nudge_hyst[room] = 0
+                
+                if nudge != 0.0:
+                    new_accum = room_nudge_accum[room] + nudge
+                    if abs(new_accum) > 2.0:  # Clamp
+                        nudge = 0.0
+                        logging.warning(f"{room} nudge clamped at ±2°C.")
+                    else:
+                        room_nudge_accum[room] = new_accum
+                        room_targets[room] += nudge
+                        room_nudge_cooldown[room] = 5
+                        room_nudge_hyst[room] = 0
+                        logging.info(f"Indirect nudge: {room} +{nudge:.2f}°C (accum {room_nudge_accum[room]:.2f}°C)")
+                # Emergency drops for indirect
+                if frac < 0.7:
+                    flow_adjust -= 5.0 * (0.7 - frac)  # Aggressive base -5.0
+
+        # Apply aggregate flow adjust (softer for direct rooms)
+        if upward_nudge_count > 0:
+            drop_base = -3.0 if any(config['room_control_mode'][r] == 'direct' for r in config['rooms']) else -5.0
+            flow_adjust += drop_base + (1.0 if any(config['room_control_mode'][r] == 'direct' for r in config['rooms']) else 1.5) * upward_nudge_count
+            flow_adjust = max(-6.0, flow_adjust)  # Step cap
+            logging.info(f"Hybrid dissipation: Flow adjust {flow_adjust:.1f}°C (upward nudges={upward_nudge_count}, base={drop_base})")
+        optimal_flow += flow_adjust
+        optimal_flow = max(30.0 if any(config['room_control_mode'][r] == 'direct' for r in config['rooms']) else 28.0, min(flow_max, optimal_flow))  # Higher floor for direct
 
         # Limit change
         optimal_flow = max(prev_flow - 3, min(prev_flow + 3, optimal_flow))
@@ -743,9 +838,10 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         # Additional penalties (Point 4: High flow in mild)
         if ext_temp > 5 and optimal_flow > 40:
             reward -= 1.5  # Penalize
-        # Valve penalty
+        # Valve penalty (harder in direct)
         if avg_open_frac < 0.5:
-            reward -= 2  # Bad control if many closed
+            penalty = 2.5 if any(config['room_control_mode'][r] == 'direct' for r in config['rooms']) else 2.0
+            reward -= penalty  # Bad control if many closed
 
         # A2C loss (skip if COP original <=0)
         original_cop = float(fetch_ha_entity(config['entities']['hp_cop']) or 0)
@@ -793,7 +889,7 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         if dfan_control and (action_counter % 10 == 0 or urgent):
             for room in config['rooms']:
                 entity_key = room + '_temp_set_hum'
-                if entity_key in config['entities']:
+                if entity_key in config['entities'] and config['room_control_mode'].get(room, 'indirect') == 'indirect':
                     temperature = room_targets[room]
                     data = {'entity_id': config['entities'][entity_key], 'temperature': temperature}
                     set_ha_service('climate', 'set_temperature', data)
