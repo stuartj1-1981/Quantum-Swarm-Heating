@@ -1,0 +1,24 @@
+name: Quantum Swarm Heating Add-on
+version: "0.0.1"
+slug: quantum_swarm_heating
+description: Adaptive ML heating control with PyTorch in HA
+arch:
+  - amd64
+startup: application
+boot: auto
+hassio_api: true
+homeassistant_api: true
+apparmor: false
+map:
+  - addon_config:rw
+options:
+  tado_rooms: "[]"
+  independent_sensors: "[]"
+  battery_entities: "{}"
+  global_entities: "{}"
+schema:
+  tado_rooms: str?
+  independent_sensors: str?
+  battery_entities: str?
+  global_entities: str?
+
