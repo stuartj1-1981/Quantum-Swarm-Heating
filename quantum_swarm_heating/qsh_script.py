@@ -119,15 +119,15 @@ if not os.path.exists('/data/options.json'):
                     "bed1": "independent_sensor02",
                     "landing": "independent_sensor03",
                     "open_plan": "independent_sensor04",
-                    "utility": 
-                    "cloaks": 
-                    "bed2": 
-                    "bed3": 
-                    "bed4": 
-                    "bathroom": 
-                    "ensuite1":
-                    "ensuite2": 
-                    "lounge": 
+                    #"utility": 
+                    #"cloaks": 
+                    #"bed2": 
+                    #"bed3": 
+                    #"bed4": 
+                    #"bathroom": 
+                    #"ensuite1":
+                    #"ensuite2": 
+                    #"lounge": 
                 },
                 "house_battery": {
                     "min_soc_reserve": 4.0,
