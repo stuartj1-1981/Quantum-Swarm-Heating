@@ -472,7 +472,7 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         current_day_rates = fetch_ha_entity(config['entities']['current_day_rates'], attr='rates') or []
         next_day_rates = fetch_ha_entity(config['entities']['next_day_rates'], attr='rates') or []
         all_rates = parse_rates_array(current_day_rates) + parse_rates_array(next_day_rates)
-        current_rate = get_current_rate(all_rates) / 100  # Assume pence to GBP
+        current_rate = get_current_rate(all_rates) 
 
         room_targets = {}
         room_temps = {}
@@ -619,10 +619,10 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         prev_demand = total_demand_adjusted
 
         logging.info(f"Mode decision: optimal_mode='{optimal_mode}', total_demand={smoothed_demand:.2f} kW, "
-                     f"ext_temp={ext_temp:.1f}°C, upcoming_cold={upcoming_cold}, upcoming_high_wind={upcoming_high_wind}, current_rate={current_rate:.3f} GBP/kWh, "
+                     f"ext_temp={ext_temp:.1f}°C, upcoming_cold={upcoming_cold}, upcoming_high_wind={upcoming_high_wind}, current_rate={current_rate:.3f} P/kWh, "
                      f"hot_water_active={hot_water_active}")
 
-        states = torch.tensor([current_rate, soc, live_cop, optimal_flow, smoothed_demand, excess_solar, wind_speed, forecast_min_temp, smoothed_grid, delta_t, hp_power, chill_factor, demand_std, avg_open_frac], dtype=torch.float32)  # Removed duplicate delta_t
+        states = torch.tensor([current_rate, soc, live_cop, optimal_flow, smoothed_demand, excess_solar, wind_speed, forecast_min_temp, smoothed_grid, delta_t, hp_power, chill_factor, demand_std, avg_open_frac], dtype=torch.float32)
 
         action = model.actor(states.unsqueeze(0))
         value = model.critic(states.unsqueeze(0))
@@ -705,7 +705,7 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         critic_loss = td_error ** 2
 
         norm_flow = (optimal_flow - 30) / 20
-        flow_mse = (action[1] - torch.tensor(norm_flow)).pow(2)
+        flow_mse = (action[0][1] - torch.tensor(norm_flow)).pow(2)  # Fixed access
         actor_loss = flow_mse
 
         loss = critic_loss + (0.5 * actor_loss)
@@ -788,7 +788,7 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         return action_counter + 1, prev_flow, prev_mode, prev_demand
 
 graph = build_dfan_graph(HOUSE_CONFIG)
-state_dim = 14  # Adjusted for removed duplicate delta_t
+state_dim = 14
 action_dim = 2
 model = ActorCritic(state_dim, action_dim)
 optimizer = optim.Adam(model.parameters(), lr=0.001)
