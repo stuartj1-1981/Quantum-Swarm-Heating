@@ -254,13 +254,50 @@ safe_override('nudge_budget', DEFAULT_NUDGE_BUDGET)
 
 # Validate HOUSE_CONFIG after overrides
 def validate_house_config(config):
+    errors = []
     if not isinstance(config['rooms'], dict) or not all(isinstance(k, str) and isinstance(v, (int, float)) for k, v in config['rooms'].items()):
-        logging.error("Invalid 'rooms' in HOUSE_CONFIG: must be dict with str keys and numeric values.")
-        raise ValueError("Invalid HOUSE_CONFIG['rooms']")
+        errors.append("Invalid 'rooms': must be dict with str keys and numeric values.")
     if not isinstance(config['facings'], dict) or not all(isinstance(k, str) and isinstance(v, (int, float)) for k, v in config['facings'].items()):
-        logging.error("Invalid 'facings' in HOUSE_CONFIG: must be dict with str keys and numeric values.")
-        raise ValueError("Invalid HOUSE_CONFIG['facings']")
-    # Add similar checks for other dicts as needed
+        errors.append("Invalid 'facings': must be dict with str keys and numeric values.")
+    if not isinstance(config['entities'], dict) or not all(isinstance(k, str) and isinstance(v, (str, list)) for k, v in config['entities'].items()):
+        errors.append("Invalid 'entities': must be dict with str keys and str or list values.")
+    if not isinstance(config['zone_sensor_map'], dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in config['zone_sensor_map'].items()):
+        errors.append("Invalid 'zone_sensor_map': must be dict with str keys and str values.")
+    if not isinstance(config['battery'], dict) or not all(k in DEFAULT_BATTERY for k in config['battery']):
+        errors.append("Invalid 'battery': missing required keys.")
+    if not isinstance(config['grid'], dict) or not all(k in DEFAULT_GRID for k in config['grid']):
+        errors.append("Invalid 'grid': missing required keys.")
+    if not isinstance(config['fallback_rates'], dict) or not all(k in DEFAULT_FALLBACK_RATES for k in config['fallback_rates']):
+        errors.append("Invalid 'fallback_rates': missing required keys.")
+    if not isinstance(config['inverter'], dict) or not all(k in DEFAULT_INVERTER for k in config['inverter']):
+        errors.append("Invalid 'inverter': missing required keys.")
+    if not isinstance(config['peak_loss'], (int, float)):
+        errors.append("Invalid 'peak_loss': must be numeric.")
+    if not isinstance(config['design_target'], (int, float)):
+        errors.append("Invalid 'design_target': must be numeric.")
+    if not isinstance(config['peak_ext'], (int, float)):
+        errors.append("Invalid 'peak_ext': must be numeric.")
+    if not isinstance(config['thermal_mass_per_m2'], (int, float)):
+        errors.append("Invalid 'thermal_mass_per_m2': must be numeric.")
+    if not isinstance(config['heat_up_tau_h'], (int, float)):
+        errors.append("Invalid 'heat_up_tau_h': must be numeric.")
+    if not isinstance(config['persistent_zones'], list) or not all(isinstance(z, str) for z in config['persistent_zones']):
+        errors.append("Invalid 'persistent_zones': must be list of str.")
+    if not isinstance(config['hp_flow_service'], dict) or not all(k in DEFAULT_HP_FLOW_SERVICE for k in config['hp_flow_service']):
+        errors.append("Invalid 'hp_flow_service': missing required keys.")
+    if not isinstance(config['hp_hvac_service'], dict) or not all(k in DEFAULT_HP_HVAC_SERVICE for k in config['hp_hvac_service']):
+        errors.append("Invalid 'hp_hvac_service': missing required keys.")
+    if not isinstance(config['room_control_mode'], dict) or not all(isinstance(k, str) and v in ['direct', 'indirect'] for k, v in config['room_control_mode'].items()):
+        errors.append("Invalid 'room_control_mode': must be dict with str keys and 'direct' or 'indirect' values.")
+    if not isinstance(config['emitter_kw'], dict) or not all(isinstance(k, str) and isinstance(v, (int, float)) for k, v in config['emitter_kw'].items()):
+        errors.append("Invalid 'emitter_kw': must be dict with str keys and numeric values.")
+    if not isinstance(config['nudge_budget'], (int, float)):
+        errors.append("Invalid 'nudge_budget': must be numeric.")
+
+    if errors:
+        for err in errors:
+            logging.error(err)
+        raise ValueError("HOUSE_CONFIG validation failed.")
     logging.info("HOUSE_CONFIG validated successfully.")
 
 validate_house_config(HOUSE_CONFIG)
@@ -395,9 +432,13 @@ first_loop = True
 prev_time = datetime.now()
 blend_factor = 0.1
 epsilon = 0.1
+prev_hp_power = 1.0  # Initial value
+prev_flow_temp = 35.0  # Initial value
+prev_cop = 3.5  # Initial value
+prev_actual_loss = 0.0  # Initial value
 
 def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow, prev_mode, prev_demand):
-    global low_power_start_time, cycle_type, cycle_start, pause_end, low_delta_persist, undetected_count, first_loop, prev_time, blend_factor, epsilon
+    global low_power_start_time, cycle_type, cycle_start, pause_end, low_delta_persist, undetected_count, first_loop, prev_time, blend_factor, epsilon, prev_hp_power, prev_flow_temp, prev_cop, prev_actual_loss
     try:
         current_time = datetime.now()
         dfan_control = fetch_ha_entity(config['entities']['dfan_control_toggle']) == 'on'
@@ -428,6 +469,10 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         flow_min = float(fetch_ha_entity(config['entities']['flow_min_temp']) or 25.0)
         flow_max = float(fetch_ha_entity(config['entities']['flow_max_temp']) or 55.0)
         pid_target = float(fetch_ha_entity(config['entities']['pid_target_temperature']) or 21.0)
+        current_day_rates = fetch_ha_entity(config['entities']['current_day_rates'], attr='rates') or []
+        next_day_rates = fetch_ha_entity(config['entities']['next_day_rates'], attr='rates') or []
+        all_rates = parse_rates_array(current_day_rates) + parse_rates_array(next_day_rates)
+        current_rate = get_current_rate(all_rates) / 100  # Assume pence to GBP
 
         room_targets = {}
         room_temps = {}
@@ -577,7 +622,7 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
                      f"ext_temp={ext_temp:.1f}°C, upcoming_cold={upcoming_cold}, upcoming_high_wind={upcoming_high_wind}, current_rate={current_rate:.3f} GBP/kWh, "
                      f"hot_water_active={hot_water_active}")
 
-        states = torch.tensor([current_rate, soc, live_cop, optimal_flow, smoothed_demand, excess_solar, wind_speed, forecast_min_temp, smoothed_grid, delta_t, hp_power, chill_factor, demand_std, delta_t, avg_open_frac], dtype=torch.float32)
+        states = torch.tensor([current_rate, soc, live_cop, optimal_flow, smoothed_demand, excess_solar, wind_speed, forecast_min_temp, smoothed_grid, delta_t, hp_power, chill_factor, demand_std, avg_open_frac], dtype=torch.float32)  # Removed duplicate delta_t
 
         action = model.actor(states.unsqueeze(0))
         value = model.critic(states.unsqueeze(0))
@@ -743,7 +788,7 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         return action_counter + 1, prev_flow, prev_mode, prev_demand
 
 graph = build_dfan_graph(HOUSE_CONFIG)
-state_dim = 15
+state_dim = 14  # Adjusted for removed duplicate delta_t
 action_dim = 2
 model = ActorCritic(state_dim, action_dim)
 optimizer = optim.Adam(model.parameters(), lr=0.001)
