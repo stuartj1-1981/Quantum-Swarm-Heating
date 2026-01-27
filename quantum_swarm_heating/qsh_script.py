@@ -184,13 +184,32 @@ HOUSE_CONFIG = {
         'ensuite2': 'indirect',
         'hall': 'indirect',
         'landing': 'indirect'
+    },
+    # Emitter kW ratings (DT50 from Radiators.xlsx; overridable via options.json)
+    'emitter_kw': {
+        'lounge': 1.4,
+        'open_plan': 3.1,  # Sum of family room rads
+        'utility': 0.6,
+        'cloaks': 0.6,
+        'bed1': 1.6,
+        'bed2': 1.0,
+        'bed3': 1.0,
+        'bed4': 1.3,
+        'bathroom': 0.39,
+        'ensuite1': 0.39,
+        'ensuite2': 0.39,
+        'hall': 1.57,
+        'landing': 1.1
     }
 }
 
-# Override room_control_mode from options.json if present
+# Override room_control_mode and emitter_kw from options.json if present
 if 'room_control_mode' in user_options:
     HOUSE_CONFIG['room_control_mode'] = user_options['room_control_mode']
     logging.info(f"Overrode room_control_mode from options.json: {HOUSE_CONFIG['room_control_mode']}")
+if 'emitter_kw' in user_options:
+    HOUSE_CONFIG['emitter_kw'] = user_options['emitter_kw']
+    logging.info(f"Overrode emitter_kw from options.json: {HOUSE_CONFIG['emitter_kw']}")
 
 # Zone offsets inferred from logs for balanced heating
 ZONE_OFFSETS = {
@@ -481,126 +500,114 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         forecast_temps = [f['temperature'] for f in forecast if 'temperature' in f]
         forecast_wind_speeds = [f['wind_speed'] for f in forecast if 'wind_speed' in f]
         forecast_min_temp = min(forecast_temps or [ext_temp])
-        wind_speed = float(fetch_ha_entity(config['entities']['forecast_weather'], 'wind_speed') or 0.0)
-        upcoming_cold = any(t < 0 for t in forecast_temps)
-        upcoming_high_wind = any(w > 15 for w in forecast_wind_speeds)
-        chill_factor = 1.0 + (wind_speed / 10.0) * 0.1
+        wind_speed = max(forecast_wind_speeds or [0.0])
+        upcoming_cold = forecast_min_temp < 0
+        upcoming_high_wind = wind_speed > 15
 
-        # Fetch solar, grid, soc, hp_output
-        solar_production = float(fetch_ha_entity(config['entities']['solar_production']) or 0.0)
-        grid_power = float(fetch_ha_entity(config['entities']['grid_power']) or 0.0)
+        # Solar production
+        production = float(fetch_ha_entity(config['entities']['solar_production']) or 0.0)
+        prod_history.append(production)
+        smoothed_prod = np.mean(prod_history)
+
+        # Battery SOC
         soc = float(fetch_ha_entity(config['entities']['battery_soc']) or 50.0)
+
+        # Grid power (negative for import)
+        grid = float(fetch_ha_entity(config['entities']['grid_power']) or 0.0)
+        grid_history.append(grid)
+        smoothed_grid = np.mean(grid_history)
+        export_kw = max(0, -smoothed_grid / 1000.0)
+
+        # HP output, power, COP
         hp_output = float(fetch_ha_entity(config['entities']['hp_output']) or 0.0)
-        excess_solar = max(0, solar_production - hp_output) / 1000.0  # Assume W to kW
+        hp_power = float(fetch_ha_entity(config['entities']['hp_energy_rate']) or 0.0)
 
-        # Rates
-        suppress_warning = datetime.now(timezone.utc).hour < 16
-        next_day_rates = parse_rates_array(fetch_ha_entity(config['entities']['next_day_rates'], 'rates') or [])
-        rates_retry = 0
-        while not next_day_rates and rates_retry < 3:
-            rates_retry += 1
-            logging.warning(f"Next rates retry {rates_retry}/3...")
-            next_day_rates = parse_rates_array(fetch_ha_entity(config['entities']['next_day_rates'], 'rates') or [])
-        all_rates = current_day_rates + next_day_rates
-        if all_rates != prev_all_rates:
-            prev_all_rates = all_rates
-            logging.info("Rates updated.")
+        # Delta T
+        primary_diff = float(fetch_ha_entity(config['entities']['primary_diff']) or 3.0)
+        delta_t = abs(primary_diff)
 
-        # Loss calculation
+        # Chill factor
+        chill_factor = 1.0 + (wind_speed / 10.0) * 0.1 if wind_speed > 10 else 1.0
+
+        # Sum area*facing for loss coeff
         sum_af = sum(config['rooms'][room] * config['facings'][room] for room in config['rooms'])
-        design_targets = {room: config['design_target'] for room in config['rooms']}
-        base_loss = total_loss(config, config['peak_ext'], design_targets, 1.0, 1.0, sum_af)  # Fixed: use 1.0 for base
-        loss_coeff = config['peak_loss'] / base_loss if base_loss > 0 else 0.0
+
+        # Actual loss
+        loss_coeff = config['peak_loss'] / (config['design_target'] - config['peak_ext'])
         actual_loss = total_loss(config, ext_temp, room_targets, chill_factor, loss_coeff, sum_af)
 
-        solar_gain = calc_solar_gain(config, solar_production / 1000.0)
-
-        total_demand = max(0, actual_loss - solar_gain)
-        aggregate_heat_up = sum(config['thermal_mass_per_m2'] * config['rooms'][room] * max(0, room_targets[room] - current_temps[room]) for room in config['rooms']) / (config['heat_up_tau_h'] * 3600)
-        total_demand_adjusted = total_demand + aggregate_heat_up
-
-        # Valve feedback (Point 1 & 2)
-        heating_percs = {}
-        for room in config['rooms']:
-            heating_entity = f'{room}_heating'
-            if heating_entity in config['entities']:
-                try:
-                    perc = float(fetch_ha_entity(config['entities'][heating_entity]) or '0')
-                except Exception as e:
-                    logging.warning(f"Fallback open perc 80% for {heating_entity}: {e}")
-                    perc = 80
-            else:
-                perc = 80  # Fallback if not found
-            heating_percs[room] = perc
-        avg_open_frac = np.mean(list(heating_percs.values())) / 100 if heating_percs else 1.0
-
-        total_demand_adjusted *= max(0.5, avg_open_frac)
-        if avg_open_frac < 0.7:
-            logging.warning(f"Low valve open frac ({avg_open_frac:.2f})—scaling demand and reducing flow.")
-
-        # Append to history and smooth
+        # Demand
+        total_demand = actual_loss - calc_solar_gain(config, smoothed_prod) - heat_up_power
+        total_demand_adjusted = max(0, total_demand) * (1 + (soc < 20) * 0.1 - (soc > 80) * 0.05)
         demand_history.append(total_demand_adjusted)
         smoothed_demand = np.mean(demand_history)
-        demand_std = np.std(demand_history) if len(demand_history) > 1 else 0.0
+        demand_std = np.std(demand_history)
 
-        prod_history.append(solar_production)
-        grid_history.append(grid_power)
-        smoothed_grid = np.mean(grid_history) if grid_history else 0.0
-        export_kw = max(0, -smoothed_grid / 1000.0)  # Assuming negative grid is export
+        # Excess solar
+        excess_solar = max(0, smoothed_prod - smoothed_demand)
 
+        # Fetch heating % for all rooms (Tado sensors, 0-100)
+        heating_percs = {}
+        for room in config['rooms']:
+            entity_key = room + '_heating'
+            if entity_key in config['entities']:
+                perc = float(fetch_ha_entity(config['entities'][entity_key]) or 0.0)
+                heating_percs[room] = perc
+            else:
+                heating_percs[room] = 0.0  # Fallback
+        avg_open_frac = np.mean(list(heating_percs.values())) / 100.0
+
+        # Aggregate heat_up
+        aggregate_heat_up = sum(max(0, room_targets[room] - current_temps[room]) for room in config['rooms'])
         heat_up_history.append((current_time, aggregate_heat_up))
-        if len(heat_up_history) > 1:
-            rates = []
-            for i in range(1, len(heat_up_history)):
-                dt = (heat_up_history[i][0] - heat_up_history[i-1][0]) / 60
-                dh = heat_up_history[i][1] - heat_up_history[i-1][1]
-                rates.append(dh / dt if dt > 0 else 0)
-            mean_rate = np.mean(rates) if rates else 0
+        if len(heat_up_history) >= 2:
+            dt = heat_up_history[-1][0] - heat_up_history[-2][0]
+            dhu = heat_up_history[-1][1] - heat_up_history[-2][1]
+            mean_rate = dhu / (dt / 60) if dt > 0 else 0.0
         else:
-            mean_rate = 0
+            mean_rate = 0.0
 
-        delta_t = float(fetch_ha_entity(config['entities']['primary_diff']) or 3.0)
-        hp_power = float(fetch_ha_entity(config['entities']['hp_energy_rate']) or 0.0)
-        logging.info(f"Current delta_t: {delta_t:.1f}°C, persist: {low_delta_persist}, avg_frac: {avg_open_frac:.2f}")
-
-        if delta_t < 1.0:
+        # Low deltaT persist (faster triggers)
+        if delta_t < 2.5:
             low_delta_persist += 1
-        elif avg_open_frac < 0.6:
-            low_delta_persist = max(1, low_delta_persist)
         else:
-            low_delta_persist = 0
+            low_delta_persist = max(0, low_delta_persist - 1)
 
-        if low_delta_persist >= 1:
-            # Sort low-frac rooms by area descending for smarter opens
-            low_frac_rooms = [r for r, f in heating_percs.items() if f / 100 < 0.6]
-            low_frac_rooms = sorted(low_frac_rooms, key=lambda r: config['rooms'][r], reverse=True)  # Large first
-            open_count = int(random.uniform(3, 5))
-            to_open = low_frac_rooms[:open_count]
+        # Emitter-smart dissipation w/ energy dispersion est
+        dissipation_fired = False
+        if low_delta_persist >= 1 or avg_open_frac < 0.6:
+            dissipation_fired = True
+            low_frac_rooms = [r for r in config['rooms'] if heating_percs[r] / 100.0 < 0.6]
+            rooms_sorted = sorted(low_frac_rooms, key=lambda r: config['emitter_kw'][r] * max(0, room_targets[r] - current_temps[r]), reverse=True)
+            top_opens = rooms_sorted[:3 + random.randint(0, 2)]
+            total_disp = sum(config['emitter_kw'][r] * max(0, room_targets[r] - current_temps[r]) for r in low_frac_rooms)
             low_frac_count = len(low_frac_rooms)
-            logging.info(f"Low deltaT dissipation: {low_frac_count} low-frac zones—opening top {open_count} large emitters: {to_open}.")
+            logging.info(f"Low deltaT dissipation: {low_frac_count} low-frac zones—opening top {len(top_opens)} by kW-disp: {top_opens}.")
             successful_opens = 0
-            for room in to_open:
+            for room in top_opens:
+                delta_temp = max(0, room_targets[room] - current_temps[room])
+                share = (config['emitter_kw'][room] * delta_temp) / total_disp if total_disp > 0 else 0
+                nudge = share * 3.0  # Nudge budget=3°C, clamp ±3°C overall via accum
                 mode = config['room_control_mode'].get(room, 'indirect')
-                valve_entity = f'number.qsh_{room}_valve_target' if mode == 'direct' else None
+                valve_entity = f'number.qsh_{room}_valve_target'
                 effective_mode = 'indirect' if (mode == 'direct' and fetch_ha_entity(valve_entity) is None) else mode
                 
                 if effective_mode == 'direct':
-                    target_frac = random.uniform(80, 90) / 100
+                    set_frac = min(90, 75 + (nudge * 10))  # Scale % open
                     if dfan_control:
-                        set_ha_service('number', 'set_value', {'entity_id': valve_entity, 'value': target_frac * 100})
+                        set_ha_service('number', 'set_value', {'entity_id': valve_entity, 'value': set_frac})
                         successful_opens += 1
-                    logging.info(f"Direct dissipate: {room} to {target_frac*100:.0f}%")
+                    logging.info(f"Direct kW-disp: {room} to {set_frac:.0f}% (disp={config['emitter_kw'][room]*delta_temp:.2f}, rating={config['emitter_kw'][room]})")
                 else:
-                    nudge = random.uniform(0.5, 1.0)
                     new_accum = room_nudge_accum[room] + nudge
-                    if abs(new_accum) <= 3.0:  # Raised clamp
+                    if abs(new_accum) <= 3.0:  # Clamp
                         room_nudge_accum[room] = new_accum
                         room_targets[room] += nudge
                         room_nudge_cooldown[room] = 0  # Bypass
                         successful_opens += 1
-                        logging.info(f"Indirect dissipate: {room} +{nudge:.1f}°C (accum {new_accum:.1f}°C)")
+                        logging.info(f"Indirect kW-disp: {room} +{nudge:.1f}°C (accum {new_accum:.1f}°C, disp={config['emitter_kw'][room]*delta_temp:.2f}, rating={config['emitter_kw'][room]})")
             
-            logging.info(f"Successful opens: {successful_opens}/{open_count}")
+            logging.info(f"Successful opens: {successful_opens}/{len(top_opens)} (prioritized large emitters)")
             low_delta_persist = 0  # Reset
         
         flow_min = float(fetch_ha_entity(config['entities']['flow_min_temp']) or 32.0)
@@ -864,6 +871,13 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
             reward += 0.5  # Bonus for healthy deltaT
         if live_cop <= 0.5:
             reward -= 0.5  # Milder penalty on low COP (shutdown proxy)
+
+        # Disp reward tweak (post-dissipation)
+        if dissipation_fired:
+            if total_disp > 5.0:
+                reward += 0.3  # Good capacity spread
+            else:
+                reward -= 0.2  # Poor spread
 
         volatile = abs(demand_delta) > 1.0
 
