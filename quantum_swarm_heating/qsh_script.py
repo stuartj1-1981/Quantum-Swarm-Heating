@@ -112,7 +112,22 @@ if not os.path.exists('/data/options.json'):
                     "ensuite1_heating": "sensor.ensuite1_heating",
                     "ensuite2_heating": "sensor.ensuite2_heating",
                     "hall_heating": "sensor.hall_heating",
-                    "landing_heating": "sensor.landing_heating",
+                    "landing_heating": "sensor.landing_heating"
+                },
+                "house_zone_sensor_map": {
+                    "hall": "independent_sensor01",
+                    "bed1": "independent_sensor02",
+                    "landing": "independent_sensor03",
+                    "open_plan": "independent_sensor04",
+                    "utility": 
+                    "cloaks": 
+                    "bed2": 
+                    "bed3": 
+                    "bed4": 
+                    "bathroom": 
+                    "ensuite1":
+                    "ensuite2": 
+                    "lounge": 
                 },
                 "house_battery": {
                     "min_soc_reserve": 4.0,
@@ -154,7 +169,7 @@ if not os.path.exists('/data/options.json'):
                     "device_id": "b680894cd18521f7c706f1305b7333ea"
                 },
                 "house_room_control_mode": {
-                    "lounge": "indirect",
+                    "lounge": "direct",
                     "open_plan": "indirect",
                     "utility": "indirect",
                     "cloaks": "indirect",
@@ -189,202 +204,35 @@ if not os.path.exists('/data/options.json'):
     except Exception as e:
         logging.error(f"Failed to auto-create options.json: {e}")
 
-# HA API setup
-HA_URL = 'http://supervisor/core/api'
-HA_TOKEN = os.getenv('SUPERVISOR_TOKEN')
-
-logging.info(f"Detected SUPERVISOR_TOKEN: {'Set' if HA_TOKEN else 'None'}")
-
-if not HA_TOKEN:
-    logging.critical("SUPERVISOR_TOKEN not set! Using defaults only. Ensure hassio_api: true in config.yaml.")
-else:
-    logging.info("SUPERVISOR_TOKEN found—using real HA API calls.")
-
-def fetch_ha_entity(entity_id, attr=None):
-    if not HA_TOKEN:
-        return None
-    headers = {
-        "Authorization": f"Bearer {HA_TOKEN}",
-        "Content-Type": "application/json"
-    }
-    try:
-        r = requests.get(f"{HA_URL}/states/{entity_id}", headers=headers)
-        r.raise_for_status()
-        data = r.json()
-        if attr:
-            return data.get('attributes', {}).get(attr)
-        return data.get('state')
-    except Exception as e:
-        logging.error(f"HA fetch error for {entity_id}: {e}")
-        return None
-
-def set_ha_service(domain, service, data):
-    if not HA_TOKEN:
-        return
-    headers = {'Authorization': f"Bearer {HA_TOKEN}"}
-    entity_id = data.get('entity_id')
-    retries = 0
-    max_retries = 3
-    while retries < max_retries:
+# Parse string overrides to dict/list/float if necessary (HA may pass as strings)
+def parse_override(value, default):
+    if isinstance(value, str):
         try:
-            if isinstance(entity_id, list):
-                for eid in entity_id:
-                    data_single = data.copy()
-                    data_single['entity_id'] = eid
-                    r = requests.post(f"{HA_URL}/services/{domain}/{service}", headers=headers, json=data_single)
-                    r.raise_for_status()
-            else:
-                r = requests.post(f"{HA_URL}/services/{domain}/{service}", headers=headers, json=data)
-                r.raise_for_status()
-            return  # Success
-        except Exception as e:
-            retries += 1
-            logging.warning(f"HA set error for {entity_id or data.get('device_id')}: {e} - retry {retries}/{max_retries}")
-            time.sleep(5)  # 5s sleep
-    logging.error(f"HA set failed after {max_retries} retries for {entity_id or data.get('device_id')}")
+            return json.loads(value)
+        except json.JSONDecodeError:
+            logging.warning(f"Failed to parse override as JSON: {value}. Using default.")
+            return default
+    return value
 
-# HOUSE_CONFIG
-HOUSE_CONFIG = {
-    'rooms': { 'lounge': 19.48, 'open_plan': 42.14, 'utility': 3.40, 'cloaks': 2.51,
-        'bed1': 18.17, 'bed2': 13.59, 'bed3': 11.07, 'bed4': 9.79, 'bathroom': 6.02, 'ensuite1': 6.38, 'ensuite2': 3.71,
-        'hall': 9.15, 'landing': 10.09 },
-    'facings': { 'lounge': 0.2, 'open_plan': 1.0, 'utility': 0.5, 'cloaks': 0.5,
-        'bed1': 0.2, 'bed2': 1.0, 'bed3': 0.5, 'bed4': 0.5, 'bathroom': 0.2, 'ensuite1': 0.5, 'ensuite2': 1.0,
-        'hall': 0.2, 'landing': 0.2 },
-    'entities': {
-        'lounge_temp_set_hum': 'climate.tado_smart_radiator_thermostat_va4240580352',
-        'open_plan_temp_set_hum': ['climate.tado_smart_radiator_thermostat_va0349246464', 'climate.tado_smart_radiator_thermostat_va3553629184'],
-        'utility_temp_set_hum': 'climate.tado_smart_radiator_thermostat_va1604136448',
-        'cloaks_temp_set_hum': 'climate.tado_smart_radiator_thermostat_va0949825024',
-        'bed1_temp_set_hum': 'climate.tado_smart_radiator_thermostat_va1287620864',
-        'bed2_temp_set_hum': 'climate.tado_smart_radiator_thermostat_va1941512960',
-        'bed3_temp_set_hum': 'climate.tado_smart_radiator_thermostat_va4141228288',
-        'bed4_temp_set_hum': 'climate.tado_smart_radiator_thermostat_va2043158784',
-        'bathroom_temp_set_hum': 'climate.tado_smart_radiator_thermostat_va2920296192',
-        'ensuite1_temp_set_hum': 'climate.tado_smart_radiator_thermostat_va0001191680',
-        'ensuite2_temp_set_hum': 'climate.tado_smart_radiator_thermostat_va1209347840',
-        'hall_temp_set_hum': 'climate.tado_smart_radiator_thermostat_va0567183616',
-        'landing_temp_set_hum': 'climate.tado_smart_radiator_thermostat_va0951787776',
-        'independent_sensor01': 'sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_sensor01_temperature',
-        'independent_sensor02': 'sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_sensor02_temperature',
-        'independent_sensor03': 'sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_sensor03_temperature',
-        'independent_sensor04': 'sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_sensor04_temperature',
-        'battery_soc': 'sensor.givtcp_ce2029g082_soc',
-        'current_day_rates': 'event.octopus_energy_electricity_21l3885048_2700002762631_current_day_rates',
-        'next_day_rates': 'event.octopus_energy_electricity_21l3885048_2700002762631_next_day_rates',
-        'current_day_export_rates': 'event.octopus_energy_electricity_21l3885048_2700006856140_export_current_day_rates',
-        'next_day_export_rates': 'event.octopus_energy_electricity_21l3885048_2700006856140_export_next_day_rates',
-        'solar_production': 'sensor.envoy_122019031249_current_power_production',
-        'outdoor_temp': 'sensor.front_door_motion_temperature',
-        'forecast_weather': 'weather.home',
-        'hp_output': 'sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_live_heat_output',
-        'hp_energy_rate': 'sensor.shellyem_c4d8d5001966_channel_1_power',
-        'total_heating_energy': 'sensor.shellyem_c4d8d5001966_channel_1_energy',
-        'water_heater': 'water_heater.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31',
-        'flow_min_temp': 'input_number.flow_min_temperature',
-        'flow_max_temp': 'input_number.flow_max_temperature',
-        'hp_cop': 'sensor.live_cop_calc',
-        'dfan_control_toggle': 'input_boolean.dfan_control',
-        'pid_target_temperature': 'input_number.pid_target_temperature',
-        'grid_power': 'sensor.givtcp_ce2029g082_grid_power',
-        'primary_diff': 'sensor.primary_diff',
-        'hp_flow_temp': 'sensor.primary_flow_temperature',
-        'lounge_heating': 'sensor.lounge_heating',
-        'open_plan_heating': 'sensor.living_area_heating',  # Note: For list, average or use primary
-        'utility_heating': 'sensor.utility_heating',
-        'cloaks_heating': 'sensor.wc_heating',
-        'bed1_heating': 'sensor.master_bedroom_heating',
-        'bed2_heating': 'sensor.fins_room_heating',
-        'bed3_heating': 'sensor.office_heating',
-        'bed4_heating': 'sensor.b1llz_room_heating',
-        'bathroom_heating': 'sensor.bathroom_heating',
-        'ensuite1_heating': 'sensor.ensuite1_heating',
-        'ensuite2_heating': 'sensor.ensuite2_heating',
-        'hall_heating': 'sensor.hall_heating',
-        'landing_heating': 'sensor.landing_heating',
-    },
-    'zone_sensor_map': { 'hall': 'independent_sensor01', 'bed1': 'independent_sensor02', 'landing': 'independent_sensor03', 'open_plan': 'independent_sensor04',
-        'utility': 'independent_sensor01', 'cloaks': 'independent_sensor01', 'bed2': 'independent_sensor02', 'bed3': 'independent_sensor03', 'bed4': 'independent_sensor03',
-        'bathroom': 'independent_sensor03', 'ensuite1': 'independent_sensor02', 'ensuite2': 'independent_sensor03', 'lounge': 'independent_sensor01' },
-    'battery': {'min_soc_reserve': 4.0, 'efficiency': 0.9, 'voltage': 51.0, 'max_rate': 3.0},
-    'grid': {'nominal_voltage': 230.0, 'min_voltage': 200.0, 'max_voltage': 250.0},
-    'fallback_rates': {'cheap': 0.1495, 'standard': 0.3048, 'peak': 0.4572, 'export': 0.15},
-    'inverter': {'fallback_efficiency': 0.95},
-    'peak_loss': 5.0,
-    'design_target': 21.0,
-    'peak_ext': -3.0,
-    'thermal_mass_per_m2': 0.03,
-    'heat_up_tau_h': 1.0,
-    'persistent_zones': ['bathroom', 'ensuite1', 'ensuite2'],
-    'hp_flow_service': {
-        'domain': 'octopus_energy',
-        'service': 'set_heat_pump_flow_temp_config',
-        'device_id': 'b680894cd18521f7c706f1305b7333ea',
-        'base_data': {
-            'weather_comp_enabled': False
-        }
-    },
-    'hp_hvac_service': {
-        'domain': 'climate',
-        'service': 'set_hvac_mode',
-        'device_id': 'b680894cd18521f7c706f1305b7333ea'
-    },
-    # Default room_control_mode (overridable via options.json)
-    'room_control_mode': {
-        'lounge': 'indirect',  # Starter: Test one new TRV in direct
-        'open_plan': 'indirect',
-        'utility': 'indirect',
-        'cloaks': 'indirect',
-        'bed1': 'indirect',
-        'bed2': 'indirect',
-        'bed3': 'indirect',
-        'bed4': 'indirect',
-        'bathroom': 'indirect',
-        'ensuite1': 'indirect',
-        'ensuite2': 'indirect',
-        'hall': 'indirect',
-        'landing': 'indirect'
-    },
-    # Emitter kW ratings (DT50 from Radiators.xlsx; overridable via options.json)
-    'emitter_kw': {
-        'lounge': 1.4,
-        'open_plan': 3.1,
-        'utility': 0.6,
-        'cloaks': 0.6,
-        'bed1': 1.6,
-        'bed2': 1.0,
-        'bed3': 1.0,
-        'bed4': 1.3,
-        'bathroom': 0.39,
-        'ensuite1': 0.39,
-        'ensuite2': 0.39,
-        'hall': 1.57,
-        'landing': 1.1
-    },
-    # New: Default nudge_budget (overridable)
-    'nudge_budget': 3.0
-}
-
-# Override all HOUSE_CONFIG from user_options (house_* keys)
-HOUSE_CONFIG['rooms'] = user_options.get('house_rooms', HOUSE_CONFIG['rooms'])
-HOUSE_CONFIG['facings'] = user_options.get('house_facings', HOUSE_CONFIG['facings'])
-HOUSE_CONFIG['entities'] = user_options.get('house_entities', HOUSE_CONFIG['entities'])
-HOUSE_CONFIG['zone_sensor_map'] = user_options.get('house_zone_sensor_map', HOUSE_CONFIG['zone_sensor_map'])
-HOUSE_CONFIG['battery'] = user_options.get('house_battery', HOUSE_CONFIG['battery'])
-HOUSE_CONFIG['grid'] = user_options.get('house_grid', HOUSE_CONFIG['grid'])
-HOUSE_CONFIG['fallback_rates'] = user_options.get('house_fallback_rates', HOUSE_CONFIG['fallback_rates'])
-HOUSE_CONFIG['inverter'] = user_options.get('house_inverter', HOUSE_CONFIG['inverter'])
-HOUSE_CONFIG['peak_loss'] = user_options.get('house_peak_loss', HOUSE_CONFIG['peak_loss'])
-HOUSE_CONFIG['design_target'] = user_options.get('house_design_target', HOUSE_CONFIG['design_target'])
-HOUSE_CONFIG['peak_ext'] = user_options.get('house_peak_ext', HOUSE_CONFIG['peak_ext'])
-HOUSE_CONFIG['thermal_mass_per_m2'] = user_options.get('house_thermal_mass_per_m2', HOUSE_CONFIG['thermal_mass_per_m2'])
-HOUSE_CONFIG['heat_up_tau_h'] = user_options.get('house_heat_up_tau_h', HOUSE_CONFIG['heat_up_tau_h'])
-HOUSE_CONFIG['persistent_zones'] = user_options.get('house_persistent_zones', HOUSE_CONFIG['persistent_zones'])
-HOUSE_CONFIG['hp_flow_service'] = user_options.get('house_hp_flow_service', HOUSE_CONFIG['hp_flow_service'])
-HOUSE_CONFIG['hp_hvac_service'] = user_options.get('house_hp_hvac_service', HOUSE_CONFIG['hp_hvac_service'])
-HOUSE_CONFIG['room_control_mode'] = user_options.get('house_room_control_mode', HOUSE_CONFIG['room_control_mode'])
-HOUSE_CONFIG['emitter_kw'] = user_options.get('house_emitter_kw', HOUSE_CONFIG['emitter_kw'])
-HOUSE_CONFIG['nudge_budget'] = user_options.get('house_nudge_budget', HOUSE_CONFIG['nudge_budget'])
+HOUSE_CONFIG['rooms'] = parse_override(user_options.get('house_rooms', HOUSE_CONFIG['rooms']), HOUSE_CONFIG['rooms'])
+HOUSE_CONFIG['facings'] = parse_override(user_options.get('house_facings', HOUSE_CONFIG['facings']), HOUSE_CONFIG['facings'])
+HOUSE_CONFIG['entities'] = parse_override(user_options.get('house_entities', HOUSE_CONFIG['entities']), HOUSE_CONFIG['entities'])
+HOUSE_CONFIG['zone_sensor_map'] = parse_override(user_options.get('house_zone_sensor_map', HOUSE_CONFIG['zone_sensor_map']), HOUSE_CONFIG['zone_sensor_map'])
+HOUSE_CONFIG['battery'] = parse_override(user_options.get('house_battery', HOUSE_CONFIG['battery']), HOUSE_CONFIG['battery'])
+HOUSE_CONFIG['grid'] = parse_override(user_options.get('house_grid', HOUSE_CONFIG['grid']), HOUSE_CONFIG['grid'])
+HOUSE_CONFIG['fallback_rates'] = parse_override(user_options.get('house_fallback_rates', HOUSE_CONFIG['fallback_rates']), HOUSE_CONFIG['fallback_rates'])
+HOUSE_CONFIG['inverter'] = parse_override(user_options.get('house_inverter', HOUSE_CONFIG['inverter']), HOUSE_CONFIG['inverter'])
+HOUSE_CONFIG['peak_loss'] = float(user_options.get('house_peak_loss', HOUSE_CONFIG['peak_loss']))
+HOUSE_CONFIG['design_target'] = float(user_options.get('house_design_target', HOUSE_CONFIG['design_target']))
+HOUSE_CONFIG['peak_ext'] = float(user_options.get('house_peak_ext', HOUSE_CONFIG['peak_ext']))
+HOUSE_CONFIG['thermal_mass_per_m2'] = float(user_options.get('house_thermal_mass_per_m2', HOUSE_CONFIG['thermal_mass_per_m2']))
+HOUSE_CONFIG['heat_up_tau_h'] = float(user_options.get('house_heat_up_tau_h', HOUSE_CONFIG['heat_up_tau_h']))
+HOUSE_CONFIG['persistent_zones'] = parse_override(user_options.get('house_persistent_zones', HOUSE_CONFIG['persistent_zones']), HOUSE_CONFIG['persistent_zones'])
+HOUSE_CONFIG['hp_flow_service'] = parse_override(user_options.get('house_hp_flow_service', HOUSE_CONFIG['hp_flow_service']), HOUSE_CONFIG['hp_flow_service'])
+HOUSE_CONFIG['hp_hvac_service'] = parse_override(user_options.get('house_hp_hvac_service', HOUSE_CONFIG['hp_hvac_service']), HOUSE_CONFIG['hp_hvac_service'])
+HOUSE_CONFIG['room_control_mode'] = parse_override(user_options.get('house_room_control_mode', HOUSE_CONFIG['room_control_mode']), HOUSE_CONFIG['room_control_mode'])
+HOUSE_CONFIG['emitter_kw'] = parse_override(user_options.get('house_emitter_kw', HOUSE_CONFIG['emitter_kw']), HOUSE_CONFIG['emitter_kw'])
+HOUSE_CONFIG['nudge_budget'] = float(user_options.get('house_nudge_budget', HOUSE_CONFIG['nudge_budget']))
 
 logging.info(f"Applied full HOUSE_CONFIG overrides from options.json: rooms={len(HOUSE_CONFIG['rooms'])}, entities={len(HOUSE_CONFIG['entities'])}, etc.")
 
