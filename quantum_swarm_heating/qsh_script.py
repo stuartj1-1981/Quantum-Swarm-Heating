@@ -18,6 +18,36 @@ import numpy as np
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+HA_URL = 'http://supervisor/core'
+TOKEN = os.getenv('SUPERVISOR_TOKEN')
+headers = {'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json'} if TOKEN else None
+
+def fetch_ha_entity(entity_id, attr=None):
+    if not headers:
+        logging.warning("No SUPERVISOR_TOKEN found—fetch_ha_entity will return None.")
+        return None
+    try:
+        response = requests.get(f'{HA_URL}/api/states/{entity_id}', headers=headers)
+        response.raise_for_status()
+        data = response.json()
+        if attr:
+            return data.get('attributes', {}).get(attr)
+        return data.get('state')
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Error fetching entity {entity_id}: {e}")
+        return None
+
+def set_ha_service(domain, service, data):
+    if not headers:
+        logging.warning("No SUPERVISOR_TOKEN found—set_ha_service skipped.")
+        return
+    try:
+        response = requests.post(f'{HA_URL}/api/services/{domain}/{service}', json=data, headers=headers)
+        response.raise_for_status()
+        logging.info(f"Service {domain}.{service} called successfully.")
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Error calling service {domain}.{service}: {e}")
+
 # Load user options
 try:
     with open('/data/options.json', 'r') as f:
@@ -30,382 +60,388 @@ logging.info(f"Loaded user_options: {user_options}")
 
 if not os.path.exists('/data/options.json'):
     try:
+        default_config = {
+            "house_rooms": {
+                "lounge": 19.48,
+                "open_plan": 42.14,
+                "utility": 3.40,
+                "cloaks": 2.51,
+                "bed1": 18.17,
+                "bed2": 13.59,
+                "bed3": 11.07,
+                "bed4": 9.79,
+                "bathroom": 6.02,
+                "ensuite1": 6.38,
+                "ensuite2": 3.71,
+                "hall": 9.15,
+                "landing": 10.09
+            },
+            "house_facings": {
+                "lounge": 0.2,
+                "open_plan": 1.0,
+                "utility": 0.5,
+                "cloaks": 0.5,
+                "bed1": 0.2,
+                "bed2": 1.0,
+                "bed3": 0.5,
+                "bed4": 0.5,
+                "bathroom": 0.2,
+                "ensuite1": 0.5,
+                "ensuite2": 1.0,
+                "hall": 0.2,
+                "landing": 0.2
+            },
+            "house_entities": {
+                "lounge_temp_set_hum": "climate.tado_smart_radiator_thermostat_va4240580352",
+                "open_plan_temp_set_hum": ["climate.tado_smart_radiator_thermostat_va0349246464", "climate.tado_smart_radiator_thermostat_va3553629184"],
+                "utility_temp_set_hum": "climate.tado_smart_radiator_thermostat_va1604136448",
+                "cloaks_temp_set_hum": "climate.tado_smart_radiator_thermostat_va0949825024",
+                "bed1_temp_set_hum": "climate.tado_smart_radiator_thermostat_va1287620864",
+                "bed2_temp_set_hum": "climate.tado_smart_radiator_thermostat_va1941512960",
+                "bed3_temp_set_hum": "climate.tado_smart_radiator_thermostat_va4141228288",
+                "bed4_temp_set_hum": "climate.tado_smart_radiator_thermostat_va2043158784",
+                "bathroom_temp_set_hum": "climate.tado_smart_radiator_thermostat_va2920296192",
+                "ensuite1_temp_set_hum": "climate.tado_smart_radiator_thermostat_va0001191680",
+                "ensuite2_temp_set_hum": "climate.tado_smart_radiator_thermostat_va1209347840",
+                "hall_temp_set_hum": "climate.tado_smart_radiator_thermostat_va0567183616",
+                "landing_temp_set_hum": "climate.tado_smart_radiator_thermostat_va0951787776",
+                "independent_sensor01": "sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_sensor01_temperature",
+                "independent_sensor02": "sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_sensor02_temperature",
+                "independent_sensor03": "sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_sensor03_temperature",
+                "independent_sensor04": "sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_sensor04_temperature",
+                "battery_soc": "sensor.givtcp_ce2029g082_soc",
+                "current_day_rates": "event.octopus_energy_electricity_21l3885048_2700002762631_current_day_rates",
+                "next_day_rates": "event.octopus_energy_electricity_21l3885048_2700002762631_next_day_rates",
+                "current_day_export_rates": "event.octopus_energy_electricity_21l3885048_2700006856140_export_current_day_rates",
+                "next_day_export_rates": "event.octopus_energy_electricity_21l3885048_2700006856140_export_next_day_rates",
+                "solar_production": "sensor.envoy_122019031249_current_power_production",
+                "outdoor_temp": "sensor.front_door_motion_temperature",
+                "forecast_weather": "weather.home",
+                "hp_output": "sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_live_heat_output",
+                "hp_energy_rate": "sensor.shellyem_c4d8d5001966_channel_1_power",
+                "total_heating_energy": "sensor.shellyem_c4d8d5001966_channel_1_energy",
+                "water_heater": "water_heater.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31",
+                "flow_min_temp": "input_number.flow_min_temperature",
+                "flow_max_temp": "input_number.flow_max_temperature",
+                "hp_cop": "sensor.live_cop_calc",
+                "dfan_control_toggle": "input_boolean.dfan_control",
+                "pid_target_temperature": "input_number.pid_target_temperature",
+                "grid_power": "sensor.givtcp_ce2029g082_grid_power",
+                "primary_diff": "sensor.primary_diff",
+                "hp_flow_temp": "sensor.primary_flow_temperature",
+                "lounge_heating": "sensor.lounge_heating",
+                "open_plan_heating": "sensor.living_area_heating",
+                "utility_heating": "sensor.utility_heating",
+                "cloaks_heating": "sensor.wc_heating",
+                "bed1_heating": "sensor.master_bedroom_heating",
+                "bed2_heating": "sensor.fins_room_heating",
+                "bed3_heating": "sensor.office_heating",
+                "bed4_heating": "sensor.b1llz_room_heating",
+                "bathroom_heating": "sensor.bathroom_heating",
+                "ensuite1_heating": "sensor.ensuite1_heating",
+                "ensuite2_heating": "sensor.ensuite2_heating",
+                "hall_heating": "sensor.hall_heating",
+                "landing_heating": "sensor.landing_heating"
+            },
+            "house_zone_sensor_map": {
+                "hall": "independent_sensor01",
+                "bed1": "independent_sensor02",
+                "landing": "independent_sensor03",
+                "open_plan": "independent_sensor04",
+                #"utility": 
+                #"cloaks": 
+                #"bed2": 
+                #"bed3": 
+                #"bed4": 
+                #"bathroom": 
+                #"ensuite1":
+                #"ensuite2": 
+                #"lounge": 
+            },
+            "house_battery": {
+                "min_soc_reserve": 4.0,
+                "efficiency": 0.9,
+                "voltage": 51.0,
+                "max_rate": 3.0
+            },
+            "house_grid": {
+                "nominal_voltage": 230.0,
+                "min_voltage": 200.0,
+                "max_voltage": 250.0
+            },
+            "house_fallback_rates": {
+                "cheap": 0.1495,
+                "standard": 0.3048,
+                "peak": 0.4572,
+                "export": 0.15
+            },
+            "house_inverter": {
+                "fallback_efficiency": 0.95
+            },
+            "house_peak_loss": 5.0,
+            "house_design_target": 21.0,
+            "house_peak_ext": -3.0,
+            "house_thermal_mass_per_m2": 0.03,
+            "house_heat_up_tau_h": 1.0,
+            "house_persistent_zones": ["bathroom", "ensuite1", "ensuite2"],
+            "house_hp_flow_service": {
+                "domain": "octopus_energy",
+                "service": "set_heat_pump_flow_temp_config",
+                "device_id": "b680894cd18521f7c706f1305b7333ea",
+                "base_data": {
+                    "weather_comp_enabled": False
+                }
+            },
+            "house_hp_hvac_service": {
+                "domain": "climate",
+                "service": "set_hvac_mode",
+                "device_id": "b680894cd18521f7c706f1305b7333ea"
+            },
+            "house_room_control_mode": {
+                "lounge": "direct",
+                "open_plan": "indirect",
+                "utility": "indirect",
+                "cloaks": "indirect",
+                "bed1": "indirect",
+                "bed2": "indirect",
+                "bed3": "indirect",
+                "bed4": "indirect",
+                "bathroom": "indirect",
+                "ensuite1": "indirect",
+                "ensuite2": "indirect",
+                "hall": "indirect",
+                "landing": "indirect"
+            },
+            "house_emitter_kw": {
+                "lounge": 1.4,
+                "open_plan": 3.1,
+                "utility": 0.6,
+                "cloaks": 0.6,
+                "bed1": 1.6,
+                "bed2": 1.0,
+                "bed3": 1.0,
+                "bed4": 1.3,
+                "bathroom": 0.39,
+                "ensuite1": 0.39,
+                "ensuite2": 0.39,
+                "hall": 1.57,
+                "landing": 1.1
+            },
+            "house_nudge_budget": 3.0
+        }
         with open('/data/options.json', 'w') as f:
-            json.dump({
-                "house_rooms": {
-                    "lounge": 19.48,
-                    "open_plan": 42.14,
-                    "utility": 3.40,
-                    "cloaks": 2.51,
-                    "bed1": 18.17,
-                    "bed2": 13.59,
-                    "bed3": 11.07,
-                    "bed4": 9.79,
-                    "bathroom": 6.02,
-                    "ensuite1": 6.38,
-                    "ensuite2": 3.71,
-                    "hall": 9.15,
-                    "landing": 10.09
-                },
-                "house_facings": {
-                    "lounge": 0.2,
-                    "open_plan": 1.0,
-                    "utility": 0.5,
-                    "cloaks": 0.5,
-                    "bed1": 0.2,
-                    "bed2": 1.0,
-                    "bed3": 0.5,
-                    "bed4": 0.5,
-                    "bathroom": 0.2,
-                    "ensuite1": 0.5,
-                    "ensuite2": 1.0,
-                    "hall": 0.2,
-                    "landing": 0.2
-                },
-                "house_entities": {
-                    "lounge_temp_set_hum": "climate.tado_smart_radiator_thermostat_va4240580352",
-                    "open_plan_temp_set_hum": ["climate.tado_smart_radiator_thermostat_va0349246464", "climate.tado_smart_radiator_thermostat_va3553629184"],
-                    "utility_temp_set_hum": "climate.tado_smart_radiator_thermostat_va1604136448",
-                    "cloaks_temp_set_hum": "climate.tado_smart_radiator_thermostat_va0949825024",
-                    "bed1_temp_set_hum": "climate.tado_smart_radiator_thermostat_va1287620864",
-                    "bed2_temp_set_hum": "climate.tado_smart_radiator_thermostat_va1941512960",
-                    "bed3_temp_set_hum": "climate.tado_smart_radiator_thermostat_va4141228288",
-                    "bed4_temp_set_hum": "climate.tado_smart_radiator_thermostat_va2043158784",
-                    "bathroom_temp_set_hum": "climate.tado_smart_radiator_thermostat_va2920296192",
-                    "ensuite1_temp_set_hum": "climate.tado_smart_radiator_thermostat_va0001191680",
-                    "ensuite2_temp_set_hum": "climate.tado_smart_radiator_thermostat_va1209347840",
-                    "hall_temp_set_hum": "climate.tado_smart_radiator_thermostat_va0567183616",
-                    "landing_temp_set_hum": "climate.tado_smart_radiator_thermostat_va0951787776",
-                    "independent_sensor01": "sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_sensor01_temperature",
-                    "independent_sensor02": "sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_sensor02_temperature",
-                    "independent_sensor03": "sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_sensor03_temperature",
-                    "independent_sensor04": "sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_sensor04_temperature",
-                    "battery_soc": "sensor.givtcp_ce2029g082_soc",
-                    "current_day_rates": "event.octopus_energy_electricity_21l3885048_2700002762631_current_day_rates",
-                    "next_day_rates": "event.octopus_energy_electricity_21l3885048_2700002762631_next_day_rates",
-                    "current_day_export_rates": "event.octopus_energy_electricity_21l3885048_2700006856140_export_current_day_rates",
-                    "next_day_export_rates": "event.octopus_energy_electricity_21l3885048_2700006856140_export_next_day_rates",
-                    "solar_production": "sensor.envoy_122019031249_current_power_production",
-                    "outdoor_temp": "sensor.front_door_motion_temperature",
-                    "forecast_weather": "weather.home",
-                    "hp_output": "sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_live_heat_output",
-                    "hp_energy_rate": "sensor.shellyem_c4d8d5001966_channel_1_power",
-                    "total_heating_energy": "sensor.shellyem_c4d8d5001966_channel_1_energy",
-                    "water_heater": "water_heater.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31",
-                    "flow_min_temp": "input_number.flow_min_temperature",
-                    "flow_max_temp": "input_number.flow_max_temperature",
-                    "hp_cop": "sensor.live_cop_calc",
-                    "dfan_control_toggle": "input_boolean.dfan_control",
-                    "pid_target_temperature": "input_number.pid_target_temperature",
-                    "grid_power": "sensor.givtcp_ce2029g082_grid_power",
-                    "primary_diff": "sensor.primary_diff",
-                    "hp_flow_temp": "sensor.primary_flow_temperature",
-                    "lounge_heating": "sensor.lounge_heating",
-                    "open_plan_heating": "sensor.living_area_heating",
-                    "utility_heating": "sensor.utility_heating",
-                    "cloaks_heating": "sensor.wc_heating",
-                    "bed1_heating": "sensor.master_bedroom_heating",
-                    "bed2_heating": "sensor.fins_room_heating",
-                    "bed3_heating": "sensor.office_heating",
-                    "bed4_heating": "sensor.b1llz_room_heating",
-                    "bathroom_heating": "sensor.bathroom_heating",
-                    "ensuite1_heating": "sensor.ensuite1_heating",
-                    "ensuite2_heating": "sensor.ensuite2_heating",
-                    "hall_heating": "sensor.hall_heating",
-                    "landing_heating": "sensor.landing_heating"
-                },
-                "house_zone_sensor_map": {
-                    "hall": "independent_sensor01",
-                    "bed1": "independent_sensor02",
-                    "landing": "independent_sensor03",
-                    "open_plan": "independent_sensor04",
-                    #"utility": 
-                    #"cloaks": 
-                    #"bed2": 
-                    #"bed3": 
-                    #"bed4": 
-                    #"bathroom": 
-                    #"ensuite1":
-                    #"ensuite2": 
-                    #"lounge": 
-                },
-                "house_battery": {
-                    "min_soc_reserve": 4.0,
-                    "efficiency": 0.9,
-                    "voltage": 51.0,
-                    "max_rate": 3.0
-                },
-                "house_grid": {
-                    "nominal_voltage": 230.0,
-                    "min_voltage": 200.0,
-                    "max_voltage": 250.0
-                },
-                "house_fallback_rates": {
-                    "cheap": 0.1495,
-                    "standard": 0.3048,
-                    "peak": 0.4572,
-                    "export": 0.15
-                },
-                "house_inverter": {
-                    "fallback_efficiency": 0.95
-                },
-                "house_peak_loss": 5.0,
-                "house_design_target": 21.0,
-                "house_peak_ext": -3.0,
-                "house_thermal_mass_per_m2": 0.03,
-                "house_heat_up_tau_h": 1.0,
-                "house_persistent_zones": ["bathroom", "ensuite1", "ensuite2"],
-                "house_hp_flow_service": {
-                    "domain": "octopus_energy",
-                    "service": "set_heat_pump_flow_temp_config",
-                    "device_id": "b680894cd18521f7c706f1305b7333ea",
-                    "base_data": {
-                        "weather_comp_enabled": False
-                    }
-                },
-                "house_hp_hvac_service": {
-                    "domain": "climate",
-                    "service": "set_hvac_mode",
-                    "device_id": "b680894cd18521f7c706f1305b7333ea"
-                },
-                "house_room_control_mode": {
-                    "lounge": "direct",
-                    "open_plan": "indirect",
-                    "utility": "indirect",
-                    "cloaks": "indirect",
-                    "bed1": "indirect",
-                    "bed2": "indirect",
-                    "bed3": "indirect",
-                    "bed4": "indirect",
-                    "bathroom": "indirect",
-                    "ensuite1": "indirect",
-                    "ensuite2": "indirect",
-                    "hall": "indirect",
-                    "landing": "indirect"
-                },
-                "house_emitter_kw": {
-                    "lounge": 1.4,
-                    "open_plan": 3.1,
-                    "utility": 0.6,
-                    "cloaks": 0.6,
-                    "bed1": 1.6,
-                    "bed2": 1.0,
-                    "bed3": 1.0,
-                    "bed4": 1.3,
-                    "bathroom": 0.39,
-                    "ensuite1": 0.39,
-                    "ensuite2": 0.39,
-                    "hall": 1.57,
-                    "landing": 1.1
-                },
-                "house_nudge_budget": 3.0
-            }, f, indent=2)
+            json.dump(default_config, f, indent=2)
         logging.info("Auto-created default options.json with full HOUSE_CONFIG")
     except Exception as e:
         logging.error(f"Failed to auto-create options.json: {e}")
 
-# Initialize HOUSE_CONFIG with defaults (must be done regardless of file existence)
-HOUSE_CONFIG = {
-    'rooms': {
-        "lounge": 19.48,
-        "open_plan": 42.14,
-        "utility": 3.40,
-        "cloaks": 2.51,
-        "bed1": 18.17,
-        "bed2": 13.59,
-        "bed3": 11.07,
-        "bed4": 9.79,
-        "bathroom": 6.02,
-        "ensuite1": 6.38,
-        "ensuite2": 3.71,
-        "hall": 9.15,
-        "landing": 10.09
-    },
-    'facings': {
-        "lounge": 0.2,
-        "open_plan": 1.0,
-        "utility": 0.5,
-        "cloaks": 0.5,
-        "bed1": 0.2,
-        "bed2": 1.0,
-        "bed3": 0.5,
-        "bed4": 0.5,
-        "bathroom": 0.2,
-        "ensuite1": 0.5,
-        "ensuite2": 1.0,
-        "hall": 0.2,
-        "landing": 0.2
-    },
-    'entities': {
-        "lounge_temp_set_hum": "climate.tado_smart_radiator_thermostat_va4240580352",
-        "open_plan_temp_set_hum": ["climate.tado_smart_radiator_thermostat_va0349246464", "climate.tado_smart_radiator_thermostat_va3553629184"],
-        "utility_temp_set_hum": "climate.tado_smart_radiator_thermostat_va1604136448",
-        "cloaks_temp_set_hum": "climate.tado_smart_radiator_thermostat_va0949825024",
-        "bed1_temp_set_hum": "climate.tado_smart_radiator_thermostat_va1287620864",
-        "bed2_temp_set_hum": "climate.tado_smart_radiator_thermostat_va1941512960",
-        "bed3_temp_set_hum": "climate.tado_smart_radiator_thermostat_va4141228288",
-        "bed4_temp_set_hum": "climate.tado_smart_radiator_thermostat_va2043158784",
-        "bathroom_temp_set_hum": "climate.tado_smart_radiator_thermostat_va2920296192",
-        "ensuite1_temp_set_hum": "climate.tado_smart_radiator_thermostat_va0001191680",
-        "ensuite2_temp_set_hum": "climate.tado_smart_radiator_thermostat_va1209347840",
-        "hall_temp_set_hum": "climate.tado_smart_radiator_thermostat_va0567183616",
-        "landing_temp_set_hum": "climate.tado_smart_radiator_thermostat_va0951787776",
-        "independent_sensor01": "sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_sensor01_temperature",
-        "independent_sensor02": "sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_sensor02_temperature",
-        "independent_sensor03": "sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_sensor03_temperature",
-        "independent_sensor04": "sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_sensor04_temperature",
-        "battery_soc": "sensor.givtcp_ce2029g082_soc",
-        "current_day_rates": "event.octopus_energy_electricity_21l3885048_2700002762631_current_day_rates",
-        "next_day_rates": "event.octopus_energy_electricity_21l3885048_2700002762631_next_day_rates",
-        "current_day_export_rates": "event.octopus_energy_electricity_21l3885048_2700006856140_export_current_day_rates",
-        "next_day_export_rates": "event.octopus_energy_electricity_21l3885048_2700006856140_export_next_day_rates",
-        "solar_production": "sensor.envoy_122019031249_current_power_production",
-        "outdoor_temp": "sensor.front_door_motion_temperature",
-        "forecast_weather": "weather.home",
-        "hp_output": "sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_live_heat_output",
-        "hp_energy_rate": "sensor.shellyem_c4d8d5001966_channel_1_power",
-        "total_heating_energy": "sensor.shellyem_c4d8d5001966_channel_1_energy",
-        "water_heater": "water_heater.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31",
-        "flow_min_temp": "input_number.flow_min_temperature",
-        "flow_max_temp": "input_number.flow_max_temperature",
-        "hp_cop": "sensor.live_cop_calc",
-        "dfan_control_toggle": "input_boolean.dfan_control",
-        "pid_target_temperature": "input_number.pid_target_temperature",
-        "grid_power": "sensor.givtcp_ce2029g082_grid_power",
-        "primary_diff": "sensor.primary_diff",
-        "hp_flow_temp": "sensor.primary_flow_temperature",
-        "lounge_heating": "sensor.lounge_heating",
-        "open_plan_heating": "sensor.living_area_heating",
-        "utility_heating": "sensor.utility_heating",
-        "cloaks_heating": "sensor.wc_heating",
-        "bed1_heating": "sensor.master_bedroom_heating",
-        "bed2_heating": "sensor.fins_room_heating",
-        "bed3_heating": "sensor.office_heating",
-        "bed4_heating": "sensor.b1llz_room_heating",
-        "bathroom_heating": "sensor.bathroom_heating",
-        "ensuite1_heating": "sensor.ensuite1_heating",
-        "ensuite2_heating": "sensor.ensuite2_heating",
-        "hall_heating": "sensor.hall_heating",
-        "landing_heating": "sensor.landing_heating"
-    },
-    'zone_sensor_map': {
-        "hall": "independent_sensor01",
-        "bed1": "independent_sensor02",
-        "landing": "independent_sensor03",
-        "open_plan": "independent_sensor04",
-        #"utility": 
-        #"cloaks": 
-        #"bed2": 
-        #"bed3": 
-        #"bed4": 
-        #"bathroom": 
-        #"ensuite1":
-        #"ensuite2": 
-        #"lounge": 
-    },
-    'battery': {
-        "min_soc_reserve": 4.0,
-        "efficiency": 0.9,
-        "voltage": 51.0,
-        "max_rate": 3.0
-    },
-    'grid': {
-        "nominal_voltage": 230.0,
-        "min_voltage": 200.0,
-        "max_voltage": 250.0
-    },
-    'fallback_rates': {
-        "cheap": 0.1495,
-        "standard": 0.3048,
-        "peak": 0.4572,
-        "export": 0.15
-    },
-    'inverter': {
-        "fallback_efficiency": 0.95
-    },
-    'peak_loss': 5.0,
-    'design_target': 21.0,
-    'peak_ext': -3.0,
-    'thermal_mass_per_m2': 0.03,
-    'heat_up_tau_h': 1.0,
-    'persistent_zones': ["bathroom", "ensuite1", "ensuite2"],
-    'hp_flow_service': {
-        "domain": "octopus_energy",
-        "service": "set_heat_pump_flow_temp_config",
-        "device_id": "b680894cd18521f7c706f1305b7333ea",
-        "base_data": {
-            "weather_comp_enabled": False
-        }
-    },
-    'hp_hvac_service': {
-        "domain": "climate",
-        "service": "set_hvac_mode",
-        "device_id": "b680894cd18521f7c706f1305b7333ea"
-    },
-    'room_control_mode': {
-        "lounge": "direct",
-        "open_plan": "indirect",
-        "utility": "indirect",
-        "cloaks": "indirect",
-        "bed1": "indirect",
-        "bed2": "indirect",
-        "bed3": "indirect",
-        "bed4": "indirect",
-        "bathroom": "indirect",
-        "ensuite1": "indirect",
-        "ensuite2": "indirect",
-        "hall": "indirect",
-        "landing": "indirect"
-    },
-    'emitter_kw': {
-        "lounge": 1.4,
-        "open_plan": 3.1,
-        "utility": 0.6,
-        "cloaks": 0.6,
-        "bed1": 1.6,
-        "bed2": 1.0,
-        "bed3": 1.0,
-        "bed4": 1.3,
-        "bathroom": 0.39,
-        "ensuite1": 0.39,
-        "ensuite2": 0.39,
-        "hall": 1.57,
-        "landing": 1.1
-    },
-    'nudge_budget': 3.0
+# Define defaults
+DEFAULT_ROOMS = {
+    "lounge": 19.48,
+    "open_plan": 42.14,
+    "utility": 3.40,
+    "cloaks": 2.51,
+    "bed1": 18.17,
+    "bed2": 13.59,
+    "bed3": 11.07,
+    "bed4": 9.79,
+    "bathroom": 6.02,
+    "ensuite1": 6.38,
+    "ensuite2": 3.71,
+    "hall": 9.15,
+    "landing": 10.09
 }
-
-logging.info(f"Initialized default HOUSE_CONFIG: rooms={len(HOUSE_CONFIG['rooms'])}, entities={len(HOUSE_CONFIG['entities'])}, etc.")
+DEFAULT_FACINGS = {
+    "lounge": 0.2,
+    "open_plan": 1.0,
+    "utility": 0.5,
+    "cloaks": 0.5,
+    "bed1": 0.2,
+    "bed2": 1.0,
+    "bed3": 0.5,
+    "bed4": 0.5,
+    "bathroom": 0.2,
+    "ensuite1": 0.5,
+    "ensuite2": 1.0,
+    "hall": 0.2,
+    "landing": 0.2
+}
+DEFAULT_ENTITIES = {
+    "lounge_temp_set_hum": "climate.tado_smart_radiator_thermostat_va4240580352",
+    "open_plan_temp_set_hum": ["climate.tado_smart_radiator_thermostat_va0349246464", "climate.tado_smart_radiator_thermostat_va3553629184"],
+    "utility_temp_set_hum": "climate.tado_smart_radiator_thermostat_va1604136448",
+    "cloaks_temp_set_hum": "climate.tado_smart_radiator_thermostat_va0949825024",
+    "bed1_temp_set_hum": "climate.tado_smart_radiator_thermostat_va1287620864",
+    "bed2_temp_set_hum": "climate.tado_smart_radiator_thermostat_va1941512960",
+    "bed3_temp_set_hum": "climate.tado_smart_radiator_thermostat_va4141228288",
+    "bed4_temp_set_hum": "climate.tado_smart_radiator_thermostat_va2043158784",
+    "bathroom_temp_set_hum": "climate.tado_smart_radiator_thermostat_va2920296192",
+    "ensuite1_temp_set_hum": "climate.tado_smart_radiator_thermostat_va0001191680",
+    "ensuite2_temp_set_hum": "climate.tado_smart_radiator_thermostat_va1209347840",
+    "hall_temp_set_hum": "climate.tado_smart_radiator_thermostat_va0567183616",
+    "landing_temp_set_hum": "climate.tado_smart_radiator_thermostat_va0951787776",
+    "independent_sensor01": "sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_sensor01_temperature",
+    "independent_sensor02": "sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_sensor02_temperature",
+    "independent_sensor03": "sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_sensor03_temperature",
+    "independent_sensor04": "sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_sensor04_temperature",
+    "battery_soc": "sensor.givtcp_ce2029g082_soc",
+    "current_day_rates": "event.octopus_energy_electricity_21l3885048_2700002762631_current_day_rates",
+    "next_day_rates": "event.octopus_energy_electricity_21l3885048_2700002762631_next_day_rates",
+    "current_day_export_rates": "event.octopus_energy_electricity_21l3885048_2700006856140_export_current_day_rates",
+    "next_day_export_rates": "event.octopus_energy_electricity_21l3885048_2700006856140_export_next_day_rates",
+    "solar_production": "sensor.envoy_122019031249_current_power_production",
+    "outdoor_temp": "sensor.front_door_motion_temperature",
+    "forecast_weather": "weather.home",
+    "hp_output": "sensor.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31_live_heat_output",
+    "hp_energy_rate": "sensor.shellyem_c4d8d5001966_channel_1_power",
+    "total_heating_energy": "sensor.shellyem_c4d8d5001966_channel_1_energy",
+    "water_heater": "water_heater.octopus_energy_heat_pump_00_1e_5e_09_02_b6_88_31",
+    "flow_min_temp": "input_number.flow_min_temperature",
+    "flow_max_temp": "input_number.flow_max_temperature",
+    "hp_cop": "sensor.live_cop_calc",
+    "dfan_control_toggle": "input_boolean.dfan_control",
+    "pid_target_temperature": "input_number.pid_target_temperature",
+    "grid_power": "sensor.givtcp_ce2029g082_grid_power",
+    "primary_diff": "sensor.primary_diff",
+    "hp_flow_temp": "sensor.primary_flow_temperature",
+    "lounge_heating": "sensor.lounge_heating",
+    "open_plan_heating": "sensor.living_area_heating",
+    "utility_heating": "sensor.utility_heating",
+    "cloaks_heating": "sensor.wc_heating",
+    "bed1_heating": "sensor.master_bedroom_heating",
+    "bed2_heating": "sensor.fins_room_heating",
+    "bed3_heating": "sensor.office_heating",
+    "bed4_heating": "sensor.b1llz_room_heating",
+    "bathroom_heating": "sensor.bathroom_heating",
+    "ensuite1_heating": "sensor.ensuite1_heating",
+    "ensuite2_heating": "sensor.ensuite2_heating",
+    "hall_heating": "sensor.hall_heating",
+    "landing_heating": "sensor.landing_heating"
+}
+DEFAULT_ZONE_SENSOR_MAP = {
+    "hall": "independent_sensor01",
+    "bed1": "independent_sensor02",
+    "landing": "independent_sensor03",
+    "open_plan": "independent_sensor04",
+    #"utility": 
+    #"cloaks": 
+    #"bed2": 
+    #"bed3": 
+    #"bed4": 
+    #"bathroom": 
+    #"ensuite1":
+    #"ensuite2": 
+    #"lounge": 
+}
+DEFAULT_BATTERY = {
+    "min_soc_reserve": 4.0,
+    "efficiency": 0.9,
+    "voltage": 51.0,
+    "max_rate": 3.0
+}
+DEFAULT_GRID = {
+    "nominal_voltage": 230.0,
+    "min_voltage": 200.0,
+    "max_voltage": 250.0
+}
+DEFAULT_FALLBACK_RATES = {
+    "cheap": 0.1495,
+    "standard": 0.3048,
+    "peak": 0.4572,
+    "export": 0.15
+}
+DEFAULT_INVERTER = {
+    "fallback_efficiency": 0.95
+}
+DEFAULT_PEAK_LOSS = 5.0
+DEFAULT_DESIGN_TARGET = 21.0
+DEFAULT_PEAK_EXT = -3.0
+DEFAULT_THERMAL_MASS_PER_M2 = 0.03
+DEFAULT_HEAT_UP_TAU_H = 1.0
+DEFAULT_PERSISTENT_ZONES = ["bathroom", "ensuite1", "ensuite2"]
+DEFAULT_HP_FLOW_SERVICE = {
+    "domain": "octopus_energy",
+    "service": "set_heat_pump_flow_temp_config",
+    "device_id": "b680894cd18521f7c706f1305b7333ea",
+    "base_data": {
+        "weather_comp_enabled": False
+    }
+}
+DEFAULT_HP_HVAC_SERVICE = {
+    "domain": "climate",
+    "service": "set_hvac_mode",
+    "device_id": "b680894cd18521f7c706f1305b7333ea"
+}
+DEFAULT_ROOM_CONTROL_MODE = {
+    "lounge": "direct",
+    "open_plan": "indirect",
+    "utility": "indirect",
+    "cloaks": "indirect",
+    "bed1": "indirect",
+    "bed2": "indirect",
+    "bed3": "indirect",
+    "bed4": "indirect",
+    "bathroom": "indirect",
+    "ensuite1": "indirect",
+    "ensuite2": "indirect",
+    "hall": "indirect",
+    "landing": "indirect"
+}
+DEFAULT_EMITTER_KW = {
+    "lounge": 1.4,
+    "open_plan": 3.1,
+    "utility": 0.6,
+    "cloaks": 0.6,
+    "bed1": 1.6,
+    "bed2": 1.0,
+    "bed3": 1.0,
+    "bed4": 1.3,
+    "bathroom": 0.39,
+    "ensuite1": 0.39,
+    "ensuite2": 0.39,
+    "hall": 1.57,
+    "landing": 1.1
+}
+DEFAULT_NUDGE_BUDGET = 3.0
 
 # Parse string overrides to dict/list/float if necessary (HA may pass as strings)
 def parse_override(value, default):
     if isinstance(value, str):
         try:
-            return json.loads(value)
+            parsed = json.loads(value)
+            if parsed:  # If not empty, return parsed
+                return parsed
+            else:
+                logging.warning(f"Parsed override is empty: {value}. Using default.")
+                return default
         except json.JSONDecodeError:
             logging.warning(f"Failed to parse override as JSON: {value}. Using default.")
             return default
+    if not value:  # If empty after parse (e.g., {} or [] from user), use default
+        logging.warning(f"Override is empty. Using default.")
+        return default
     return value
 
-HOUSE_CONFIG['rooms'] = parse_override(user_options.get('house_rooms', HOUSE_CONFIG['rooms']), HOUSE_CONFIG['rooms'])
-HOUSE_CONFIG['facings'] = parse_override(user_options.get('house_facings', HOUSE_CONFIG['facings']), HOUSE_CONFIG['facings'])
-HOUSE_CONFIG['entities'] = parse_override(user_options.get('house_entities', HOUSE_CONFIG['entities']), HOUSE_CONFIG['entities'])
-HOUSE_CONFIG['zone_sensor_map'] = parse_override(user_options.get('house_zone_sensor_map', HOUSE_CONFIG['zone_sensor_map']), HOUSE_CONFIG['zone_sensor_map'])
-HOUSE_CONFIG['battery'] = parse_override(user_options.get('house_battery', HOUSE_CONFIG['battery']), HOUSE_CONFIG['battery'])
-HOUSE_CONFIG['grid'] = parse_override(user_options.get('house_grid', HOUSE_CONFIG['grid']), HOUSE_CONFIG['grid'])
-HOUSE_CONFIG['fallback_rates'] = parse_override(user_options.get('house_fallback_rates', HOUSE_CONFIG['fallback_rates']), HOUSE_CONFIG['fallback_rates'])
-HOUSE_CONFIG['inverter'] = parse_override(user_options.get('house_inverter', HOUSE_CONFIG['inverter']), HOUSE_CONFIG['inverter'])
-HOUSE_CONFIG['peak_loss'] = float(user_options.get('house_peak_loss', HOUSE_CONFIG['peak_loss']))
-HOUSE_CONFIG['design_target'] = float(user_options.get('house_design_target', HOUSE_CONFIG['design_target']))
-HOUSE_CONFIG['peak_ext'] = float(user_options.get('house_peak_ext', HOUSE_CONFIG['peak_ext']))
-HOUSE_CONFIG['thermal_mass_per_m2'] = float(user_options.get('house_thermal_mass_per_m2', HOUSE_CONFIG['thermal_mass_per_m2']))
-HOUSE_CONFIG['heat_up_tau_h'] = float(user_options.get('house_heat_up_tau_h', HOUSE_CONFIG['heat_up_tau_h']))
-HOUSE_CONFIG['persistent_zones'] = parse_override(user_options.get('house_persistent_zones', HOUSE_CONFIG['persistent_zones']), HOUSE_CONFIG['persistent_zones'])
-HOUSE_CONFIG['hp_flow_service'] = parse_override(user_options.get('house_hp_flow_service', HOUSE_CONFIG['hp_flow_service']), HOUSE_CONFIG['hp_flow_service'])
-HOUSE_CONFIG['hp_hvac_service'] = parse_override(user_options.get('house_hp_hvac_service', HOUSE_CONFIG['hp_hvac_service']), HOUSE_CONFIG['hp_hvac_service'])
-HOUSE_CONFIG['room_control_mode'] = parse_override(user_options.get('house_room_control_mode', HOUSE_CONFIG['room_control_mode']), HOUSE_CONFIG['room_control_mode'])
-HOUSE_CONFIG['emitter_kw'] = parse_override(user_options.get('house_emitter_kw', HOUSE_CONFIG['emitter_kw']), HOUSE_CONFIG['emitter_kw'])
-HOUSE_CONFIG['nudge_budget'] = float(user_options.get('house_nudge_budget', HOUSE_CONFIG['nudge_budget']))
+HOUSE_CONFIG = {}
+HOUSE_CONFIG['rooms'] = parse_override(user_options.get('house_rooms', DEFAULT_ROOMS), DEFAULT_ROOMS)
+HOUSE_CONFIG['facings'] = parse_override(user_options.get('house_facings', DEFAULT_FACINGS), DEFAULT_FACINGS)
+HOUSE_CONFIG['entities'] = parse_override(user_options.get('house_entities', DEFAULT_ENTITIES), DEFAULT_ENTITIES)
+HOUSE_CONFIG['zone_sensor_map'] = parse_override(user_options.get('house_zone_sensor_map', DEFAULT_ZONE_SENSOR_MAP), DEFAULT_ZONE_SENSOR_MAP)
+HOUSE_CONFIG['battery'] = parse_override(user_options.get('house_battery', DEFAULT_BATTERY), DEFAULT_BATTERY)
+HOUSE_CONFIG['grid'] = parse_override(user_options.get('house_grid', DEFAULT_GRID), DEFAULT_GRID)
+HOUSE_CONFIG['fallback_rates'] = parse_override(user_options.get('house_fallback_rates', DEFAULT_FALLBACK_RATES), DEFAULT_FALLBACK_RATES)
+HOUSE_CONFIG['inverter'] = parse_override(user_options.get('house_inverter', DEFAULT_INVERTER), DEFAULT_INVERTER)
+HOUSE_CONFIG['peak_loss'] = float(user_options.get('house_peak_loss', DEFAULT_PEAK_LOSS))
+HOUSE_CONFIG['design_target'] = float(user_options.get('house_design_target', DEFAULT_DESIGN_TARGET))
+HOUSE_CONFIG['peak_ext'] = float(user_options.get('house_peak_ext', DEFAULT_PEAK_EXT))
+HOUSE_CONFIG['thermal_mass_per_m2'] = float(user_options.get('house_thermal_mass_per_m2', DEFAULT_THERMAL_MASS_PER_M2))
+HOUSE_CONFIG['heat_up_tau_h'] = float(user_options.get('house_heat_up_tau_h', DEFAULT_HEAT_UP_TAU_H))
+HOUSE_CONFIG['persistent_zones'] = parse_override(user_options.get('house_persistent_zones', DEFAULT_PERSISTENT_ZONES), DEFAULT_PERSISTENT_ZONES)
+HOUSE_CONFIG['hp_flow_service'] = parse_override(user_options.get('house_hp_flow_service', DEFAULT_HP_FLOW_SERVICE), DEFAULT_HP_FLOW_SERVICE)
+HOUSE_CONFIG['hp_hvac_service'] = parse_override(user_options.get('house_hp_hvac_service', DEFAULT_HP_HVAC_SERVICE), DEFAULT_HP_HVAC_SERVICE)
+HOUSE_CONFIG['room_control_mode'] = parse_override(user_options.get('house_room_control_mode', DEFAULT_ROOM_CONTROL_MODE), DEFAULT_ROOM_CONTROL_MODE)
+HOUSE_CONFIG['emitter_kw'] = parse_override(user_options.get('house_emitter_kw', DEFAULT_EMITTER_KW), DEFAULT_EMITTER_KW)
+HOUSE_CONFIG['nudge_budget'] = float(user_options.get('house_nudge_budget', DEFAULT_NUDGE_BUDGET))
 
 logging.info(f"Applied full HOUSE_CONFIG overrides from options.json: rooms={len(HOUSE_CONFIG['rooms'])}, entities={len(HOUSE_CONFIG['entities'])}, etc.")
 
@@ -694,34 +730,41 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         # Else: Normal processing
         # Fetch sensor temps
         sensor_temps = {
-            'independent_sensor01': float(fetch_ha_entity(config['entities']['independent_sensor01']) or target_temp),
-            'independent_sensor02': float(fetch_ha_entity(config['entities']['independent_sensor02']) or target_temp),
-            'independent_sensor03': float(fetch_ha_entity(config['entities']['independent_sensor03']) or target_temp),
-            'independent_sensor04': float(fetch_ha_entity(config['entities']['independent_sensor04']) or target_temp),
+            'independent_sensor01': float(fetch_ha_entity(config['entities'].get('independent_sensor01')) or target_temp),
+            'independent_sensor02': float(fetch_ha_entity(config['entities'].get('independent_sensor02')) or target_temp),
+            'independent_sensor03': float(fetch_ha_entity(config['entities'].get('independent_sensor03')) or target_temp),
+            'independent_sensor04': float(fetch_ha_entity(config['entities'].get('independent_sensor04')) or target_temp),
         }
 
         # Fetch heating percentages (valve % open)
         heating_percs = {}
         avg_open_frac = 0.0
-        for room in config['rooms']:
-            heating_entity = config['entities'].get(room + '_heating')
-            perc = float(fetch_ha_entity(heating_entity) or 0.0)
-            heating_percs[room] = perc
-            avg_open_frac += perc / 100.0
-        avg_open_frac /= len(config['rooms'])
+        num_rooms = len(config['rooms'])
+        if num_rooms == 0:
+            logging.warning("No rooms defined in HOUSE_CONFIG—skipping heating perc fetch.")
+        else:
+            for room in config['rooms']:
+                heating_entity = config['entities'].get(room + '_heating')
+                if heating_entity:
+                    perc = float(fetch_ha_entity(heating_entity) or 0.0)
+                    heating_percs[room] = perc
+                    avg_open_frac += perc / 100.0
+                else:
+                    logging.warning(f"No heating entity for {room}.")
+            avg_open_frac /= num_rooms
 
         # Compute sum_af for loss
-        sum_af = sum(config['rooms'][room] * config['facings'][room] for room in config['rooms'])
+        sum_af = sum(config['rooms'].get(room, 0) * config['facings'].get(room, 1.0) for room in config['rooms'])
 
         # Compute actual_loss (heat_loss synonym?)
         actual_loss = total_loss(config, ext_temp, room_targets, chill_factor=1.0, loss_coeff=config['peak_loss'], sum_af=sum_af)  # Assuming heat_loss = actual_loss
 
         # Fetch other vars (placeholders for full impl; assume from context)
-        solar_production = float(fetch_ha_entity(config['entities']['solar_production']) or 0.0)
-        hp_power = float(fetch_ha_entity(config['entities']['hp_energy_rate']) or 0.0)
-        delta_t = float(fetch_ha_entity(config['entities']['primary_diff']) or 3.0)
-        grid_power = float(fetch_ha_entity(config['entities']['grid_power']) or 0.0)
-        soc = float(fetch_ha_entity(config['entities']['battery_soc']) or 50.0)
+        solar_production = float(fetch_ha_entity(config['entities'].get('solar_production')) or 0.0)
+        hp_power = float(fetch_ha_entity(config['entities'].get('hp_energy_rate')) or 0.0)
+        delta_t = float(fetch_ha_entity(config['entities'].get('primary_diff')) or 3.0)
+        grid_power = float(fetch_ha_entity(config['entities'].get('grid_power')) or 0.0)
+        soc = float(fetch_ha_entity(config['entities'].get('battery_soc')) or 50.0)
         wind_speed = 0.0  # Assume fetch if entity exists
         forecast_min_temp = 0.0  # Assume
         excess_solar = max(0, solar_production - actual_loss)
@@ -733,9 +776,9 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         demand_history.append(actual_loss)
         prod_history.append(solar_production)
         grid_history.append(grid_power)
-        smoothed_demand = np.mean(demand_history)
-        demand_std = np.std(demand_history)
-        smoothed_grid = np.mean(grid_history)
+        smoothed_demand = np.mean(demand_history) if demand_history else 0.0
+        demand_std = np.std(demand_history) if demand_history else 0.0
+        smoothed_grid = np.mean(grid_history) if grid_history else 0.0
 
         # heat_up_power calc (fixed)
         thermal_mass_per_m2 = config['thermal_mass_per_m2']
@@ -743,8 +786,8 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         heat_up_power = 0.0
         aggregate_heat_up = 0.0  # Bonus: Compute aggregate for later
         for room, area in config['rooms'].items():  # Fixed loop
-            current_temp = get_current_temp(room, sensor_temps, room_targets[room])
-            max_delta = max(0, room_targets[room] - current_temp)
+            current_temp = get_current_temp(room, sensor_temps, room_targets.get(room, target_temp))
+            max_delta = max(0, room_targets.get(room, target_temp) - current_temp)
             heat_up_power += (area * thermal_mass_per_m2 * max_delta) / heat_up_tau_h
             aggregate_heat_up += max_delta  # Simple sum for aggregate
 
@@ -763,12 +806,12 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         total_disp = 0.0
         if low_delta_persist >= 1 or avg_open_frac < 0.6:
             dissipation_fired = True
-            low_frac_rooms = [r for r in config['rooms'] if heating_percs[r]/100.0 < 0.6]
+            low_frac_rooms = [r for r in config['rooms'] if heating_percs.get(r, 0)/100.0 < 0.6]
             # Sort by energy_disp desc (kW * delta_temp)
             energy_disp = {}
             for room in low_frac_rooms:
-                current_temp = get_current_temp(room, sensor_temps, room_targets[room])
-                delta_temp = max(0, room_targets[room] - current_temp)
+                current_temp = get_current_temp(room, sensor_temps, room_targets.get(room, target_temp))
+                delta_temp = max(0, room_targets.get(room, target_temp) - current_temp)
                 energy_disp[room] = config['emitter_kw'].get(room, 1.0) * delta_temp  # Fallback kW=1.0
                 total_disp += energy_disp[room]
             prioritized_rooms = sorted(low_frac_rooms, key=lambda r: energy_disp.get(r, 0), reverse=True)
@@ -789,28 +832,28 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
                     if dfan_control:
                         set_ha_service('number', 'set_value', {'entity_id': valve_entity, 'value': set_frac})
                         successful_opens += 1
-                    logging.info(f"Direct kW-disp: {room} to {set_frac:.0f}% (disp={config['emitter_kw'][room]*delta_temp:.2f}, rating={config['emitter_kw'][room]})")
+                    logging.info(f"Direct kW-disp: {room} to {set_frac:.0f}% (disp={config['emitter_kw'].get(room, 1.0)*delta_temp:.2f}, rating={config['emitter_kw'].get(room, 1.0)})")
                 else:
-                    new_accum = room_nudge_accum[room] + nudge
+                    new_accum = room_nudge_accum.get(room, 0.0) + nudge
                     if abs(new_accum) <= config['nudge_budget']:  # Clamp to budget
                         room_nudge_accum[room] = new_accum
                         room_targets[room] += nudge
                         room_nudge_cooldown[room] = 0  # Bypass
                         successful_opens += 1
-                        logging.info(f"Indirect kW-disp: {room} +{nudge:.1f}°C (accum {new_accum:.1f}°C, disp={config['emitter_kw'][room]*delta_temp:.2f}, rating={config['emitter_kw'][room]})")
+                        logging.info(f"Indirect kW-disp: {room} +{nudge:.1f}°C (accum {new_accum:.1f}°C, disp={config['emitter_kw'].get(room, 1.0)*delta_temp:.2f}, rating={config['emitter_kw'].get(room, 1.0)})")
             
             logging.info(f"Successful opens: {successful_opens}/{len(top_opens)} (prioritized large emitters)")
             low_delta_persist = 0  # Reset
         
-        flow_min = float(fetch_ha_entity(config['entities']['flow_min_temp']) or 32.0)
-        flow_max = float(fetch_ha_entity(config['entities']['flow_max_temp']) or 50.0)
+        flow_min = float(fetch_ha_entity(config['entities'].get('flow_min_temp')) or 32.0)
+        flow_max = float(fetch_ha_entity(config['entities'].get('flow_max_temp')) or 50.0)
 
         # Det flow (Point 4: Start low, increase on need)
         det_flow = 30 + (smoothed_demand / config['peak_loss'] * 10)  # Low scale, no WC
         # heat_up rate (from history)
         if len(heat_up_history) > 1:
             prev_time_h, prev_heat_up = heat_up_history[0]
-            mean_rate = (aggregate_heat_up - prev_heat_up) / ((current_time - prev_time_h) / 60)  # °C/min aggregate
+            mean_rate = (aggregate_heat_up - prev_heat_up) / ((current_time - prev_time_h) / 60) if (current_time - prev_time_h) > 0 else 0.0  # °C/min aggregate
         else:
             mean_rate = 0.0
         heat_up_history.append((current_time, aggregate_heat_up))
@@ -843,14 +886,13 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         upward_nudge_count = 0
         for room in config['rooms']:
             mode = config['room_control_mode'].get(room, 'indirect')
-            frac = heating_percs[room] / 100.0
+            frac = heating_percs.get(room, 0) / 100.0
             logging.info(f"Hybrid: {room} mode={mode}, frac={frac:.2f}")
             
-            if mode == 'direct':
-                valve_entity = f'number.qsh_{room}_valve_target'  # Assume new entities for direct % set
-                if fetch_ha_entity(valve_entity) is None:
-                    logging.warning(f"No valve entity for {room}—fallback to indirect.")
-                    mode = 'indirect'
+            valve_entity = f'number.qsh_{room}_valve_target'  # Assume new entities for direct % set
+            if mode == 'direct' and fetch_ha_entity(valve_entity) is None:
+                logging.warning(f"No valve entity for {room}—fallback to indirect.")
+                mode = 'indirect'
             
             if mode == 'direct':
                 # Direct: Set % open (ideal 0.75, adjust on deviations)
@@ -870,7 +912,7 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
             else:
                 # Indirect: Nudge setpoints w/ hysteresis/cooldown/clamp
                 nudge = 0.0
-                if room_nudge_cooldown[room] > 0:
+                if room_nudge_cooldown.get(room, 0) > 0:
                     room_nudge_cooldown[room] -= 1
                     continue
                 if frac < 0.4:  # Crit low
@@ -895,7 +937,7 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
                     room_nudge_hyst[room] = 0
                 
                 if nudge != 0.0:
-                    new_accum = room_nudge_accum[room] + nudge
+                    new_accum = room_nudge_accum.get(room, 0.0) + nudge
                     if abs(new_accum) > config['nudge_budget']:  # Clamp to budget
                         nudge = 0.0
                         logging.warning(f"{room} nudge clamped at ±{config['nudge_budget']}°C.")
@@ -911,12 +953,12 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
 
         # Apply aggregate flow adjust (softer for direct rooms)
         if upward_nudge_count > 0:
-            drop_base = -3.0 if any(config['room_control_mode'][r] == 'direct' for r in config['rooms']) else -5.0
-            flow_adjust += drop_base + (1.0 if any(config['room_control_mode'][r] == 'direct' for r in config['rooms']) else 1.5) * upward_nudge_count
+            drop_base = -3.0 if any(config['room_control_mode'].get(r, 'indirect') == 'direct' for r in config['rooms']) else -5.0
+            flow_adjust += drop_base + (1.0 if any(config['room_control_mode'].get(r, 'indirect') == 'direct' for r in config['rooms']) else 1.5) * upward_nudge_count
             flow_adjust = max(-6.0, flow_adjust)  # Step cap
             logging.info(f"Hybrid dissipation: Flow adjust {flow_adjust:.1f}°C (upward nudges={upward_nudge_count}, base={drop_base})")
         optimal_flow += flow_adjust
-        optimal_flow = max(30.0 if any(config['room_control_mode'][r] == 'direct' for r in config['rooms']) else 28.0, min(flow_max, optimal_flow))  # Higher floor for direct
+        optimal_flow = max(30.0 if any(config['room_control_mode'].get(r, 'indirect') == 'direct' for r in config['rooms']) else 28.0, min(flow_max, optimal_flow))  # Higher floor for direct
 
         # Limit change
         optimal_flow = max(prev_flow - 3, min(prev_flow + 3, optimal_flow))
@@ -942,10 +984,10 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         flow_delta = abs(optimal_flow - prev_flow)
         flow_ramp_rate = abs(flow_delta) / (time_delta / 60) if time_delta > 0 else 0
         
-        current_flow_temp = float(fetch_ha_entity(config['entities']['hp_flow_temp']) or 35.0)
-        cop_value = fetch_ha_entity(config['entities']['hp_cop'])
+        current_flow_temp = float(fetch_ha_entity(config['entities'].get('hp_flow_temp')) or 35.0)
+        cop_value = fetch_ha_entity(config['entities'].get('hp_cop'))
         if cop_value == 'unavailable':
-            cop_value = fetch_ha_entity(config['entities']['hp_cop'])  # Redundancy
+            cop_value = fetch_ha_entity(config['entities'].get('hp_cop'))  # Redundancy
         if cop_value == 'unavailable' or float(cop_value or 0) <= 0:
             logging.warning("COP gap or <=0 - using median history.")
             non_zero_cops = [c for c in cop_history if c > 0]
@@ -1061,7 +1103,7 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
             cycle_start = None
 
         # Base reward with scaling
-        reward = -0.8 * current_rate * total_demand_adjusted / live_cop
+        reward = -0.8 * current_rate * total_demand_adjusted / live_cop if live_cop > 0 else 0.0
         reward += (live_cop - 3.0) * 0.5 - (abs(aggregate_heat_up) * 0.1)  # Use aggregate
         reward += reward_adjust
 
@@ -1116,11 +1158,11 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
             reward -= 1.5  # Penalize
         # Valve penalty (harder in direct)
         if avg_open_frac < 0.5:
-            penalty = 2.5 if any(config['room_control_mode'][r] == 'direct' for r in config['rooms']) else 2.0
+            penalty = 2.5 if any(config['room_control_mode'].get(r, 'indirect') == 'direct' for r in config['rooms']) else 2.0
             reward -= penalty  # Bad control if many closed
 
         # A2C loss (skip if COP original <=0)
-        original_cop = float(fetch_ha_entity(config['entities']['hp_cop']) or 0)
+        original_cop = float(fetch_ha_entity(config['entities'].get('hp_cop')) or 0)
         if original_cop <= 0:
             logging.info("Skipping reward update due to COP <=0.")
             reward = 0.0
