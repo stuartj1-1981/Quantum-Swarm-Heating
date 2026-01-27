@@ -197,7 +197,7 @@ DEFAULT_EMITTER_KW = {
     'hall': 1.57,
     'landing': 1.1
 }
-DEFAULT_NUDGE_BUDGET = 3.0
+DEFAULT_NUDGE_BUDGET = 2.5  # Lowered default to reduce over-boost
 
 # HOUSE_CONFIG with defaults
 HOUSE_CONFIG = {
@@ -547,6 +547,8 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         loss_history.append(maintenance_loss + deficit_loss)  # For adjustment
         smoothed_loss = np.mean(loss_history)
         total_demand_adjusted = smoothed_demand * (1 + blend_factor * ((maintenance_loss + deficit_loss) / smoothed_loss - 1)) if smoothed_loss > 0 else smoothed_demand
+        if total_demand_adjusted > 12.0:
+            total_demand_adjusted *= 0.95  # Soft dampen to avoid hard cap
         demand_std = np.std(demand_history)
 
         if hot_water_active:
@@ -619,7 +621,7 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         prev_demand = total_demand_adjusted
 
         logging.info(f"Mode decision: optimal_mode='{optimal_mode}', total_demand={smoothed_demand:.2f} kW, "
-                     f"ext_temp={ext_temp:.1f}°C, upcoming_cold={upcoming_cold}, upcoming_high_wind={upcoming_high_wind}, current_rate={current_rate:.3f} P/kWh, "
+                     f"ext_temp={ext_temp:.1f}°C, upcoming_cold={upcoming_cold}, upcoming_high_wind={upcoming_high_wind}, current_rate={current_rate:.3f} GBP/kWh, "
                      f"hot_water_active={hot_water_active}")
 
         states = torch.tensor([current_rate, soc, live_cop, optimal_flow, smoothed_demand, excess_solar, wind_speed, forecast_min_temp, smoothed_grid, delta_t, hp_power, chill_factor, demand_std, avg_open_frac], dtype=torch.float32)
@@ -696,6 +698,9 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         if avg_open_frac < 0.5:
             penalty = 2.5 if any(config['room_control_mode'].get(r, 'indirect') == 'direct' for r in config['rooms']) else 2.0
             reward -= penalty
+
+        if total_demand_adjusted > 12.0:
+            reward -= 0.5  # New penalty for high demand
 
         original_cop = float(fetch_ha_entity(config['entities'].get('hp_cop')) or 0)
         if original_cop <= 0:
