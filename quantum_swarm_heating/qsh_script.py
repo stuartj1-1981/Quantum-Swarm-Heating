@@ -188,7 +188,7 @@ HOUSE_CONFIG = {
     # Emitter kW ratings (DT50 from Radiators.xlsx; overridable via options.json)
     'emitter_kw': {
         'lounge': 1.4,
-        'open_plan': 3.1,  # Sum of family room rads
+        'open_plan': 3.1,
         'utility': 0.6,
         'cloaks': 0.6,
         'bed1': 1.6,
@@ -536,8 +536,12 @@ def sim_step(graph, states, config, model, optimizer, action_counter, prev_flow,
         loss_coeff = config['peak_loss'] / (config['design_target'] - config['peak_ext'])
         actual_loss = total_loss(config, ext_temp, room_targets, chill_factor, loss_coeff, sum_af)
 
+        # Heat up power (additional demand for temp rise)
+        heat_up_power = sum(config['rooms'][room] * config['thermal_mass_per_m2'] * max(0, room_targets[room] - current_temps[room]) for room in config['rooms']) / config['heat_up_tau_h']
+        logging.info(f"Calculated heat_up_power: {heat_up_power:.2f} kW")
+
         # Demand
-        total_demand = actual_loss - calc_solar_gain(config, smoothed_prod) - heat_up_power
+        total_demand = actual_loss + heat_up_power - calc_solar_gain(config, smoothed_prod)
         total_demand_adjusted = max(0, total_demand) * (1 + (soc < 20) * 0.1 - (soc > 80) * 0.05)
         demand_history.append(total_demand_adjusted)
         smoothed_demand = np.mean(demand_history)
