@@ -10,7 +10,7 @@
   "boot": "auto",
   "hassio_api": true,
   "homeassistant_api": true,
-  "apparmor": false,
+  "apparmor": true,
   "map": [
     "addon_config:rw"
   ],
