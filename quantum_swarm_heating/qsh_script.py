@@ -1324,23 +1324,6 @@ def main():
             if optimal_mode not in ['off', 'heat']:
                 logging.warning(f"Invalid optimal_mode '{optimal_mode}', forcing 'heat'")
                 optimal_mode = 'heat'
-            optimal_flow = max(25.0, min(55.0, safe_float(optimal_flow, 40.0)))
-
-            hp_flow_cfg = HOUSE_CONFIG['hp_flow_service']
-            flow_data = dict(hp_flow_cfg.get('base_data', {}))
-            flow_data.update({
-                "device_id": hp_flow_cfg.get("device_id"),
-                "flow_temp": optimal_flow
-            })
-            set_ha_service(hp_flow_cfg['domain'], hp_flow_cfg['service'], flow_data)
-
-            hvac_cfg = HOUSE_CONFIG['hp_hvac_service']
-            hvac_data = {
-                "device_id": hvac_cfg.get("device_id"),
-                "hvac_mode": optimal_mode
-            }
-            set_ha_service(hvac_cfg['domain'], hvac_cfg['service'], hvac_data)
-
         except Exception as e:
             logging.error(f"Top-level control loop error: {e}. Entering failsafe mode.")
             try:
