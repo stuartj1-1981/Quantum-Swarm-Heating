@@ -1,3 +1,5 @@
+import networkx as nx
+
 def build_dfan_graph(config):
     G = nx.Graph()
     for room in config['rooms']:
