@@ -1,6 +1,17 @@
 import os
 import json
 import logging
+from .utils import safe_float
+
+# Load user options
+try:
+    with open('/data/options.json', 'r') as f:
+        user_options = json.load(f)
+except Exception as e:
+    logging.warning(f"Failed to load options.json: {e}. Using defaults.")
+    user_options = {}
+
+logging.info(f"Loaded user_options: {user_options}")
 
 if not os.path.exists('/data/options.json'):
     try:
