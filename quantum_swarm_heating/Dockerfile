@@ -9,4 +9,4 @@ RUN pip install --no-cache-dir numpy==1.26.4 \
 COPY qsh /qsh
 
 # Run script
-CMD ["python", "-m", "/qsh/main"]
+CMD ["python", "-m", "/qsh.main"]
