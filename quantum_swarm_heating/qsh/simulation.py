@@ -55,7 +55,7 @@ reward_history = deque(maxlen=1000)
 loss_history = deque(maxlen=1000)
 pause_count = 0
 undetected_count = 0
-enable_plots = user_options.get('enable_plots', False)
+enable_plots = False  # hardcoded during Phase 1B debug; options.json removal planned in Phase 1C
 first_loop = True
 epsilon = 0.2
 blend_factor = 0.0
