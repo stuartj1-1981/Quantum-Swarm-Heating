@@ -23,7 +23,7 @@ class ActorCritic(nn.Module):
         value = self.critic(x)
         return action, value
 
-def train_rl(model, optimizer, episodes=20:
+def train_rl(model, optimizer, episodes=20):
     state_ranges = torch.tensor([0.5, 100, 5, 55, 15, 5, 20, 10, 5, 10, 5, 2, 2, 5, 1.0])
     for _ in range(episodes):
         sim_state = torch.rand(15) * state_ranges
